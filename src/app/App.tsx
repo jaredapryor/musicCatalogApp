@@ -1,1104 +1,696 @@
-import React, { useState, useMemo, useEffect, createContext, useContext } from "react";
+import React, { useState, useMemo, createContext, useContext, useEffect } from "react";
 import { RouterProvider, useNavigate, useLocation } from "react-router";
 import { router } from "./routes";
-import * as Dialog from "@radix-ui/react-dialog";
-import * as Tooltip from "@radix-ui/react-tooltip";
+import { X, ArrowLeft, Search, Plus, Pencil, Trash2, Music, ChevronDown, ChevronUp, Moon, Sun } from "lucide-react";
 import { Toaster, toast } from "sonner";
-import { Search, X, ChevronDown, ChevronUp, Plus, Pencil, Trash2, Music, Users, Disc3, ArrowLeft, Sun, Moon } from "lucide-react";
-import type { Album, Artist, ArtistType, Certification, StreamingPlatform } from "./types";
+import type { Album, Artist, ArtistType, Cert, StreamingPlatform } from "./types";
 import * as catalogApi from "./api/catalogApi";
+import {
+  PHOTO_BY_FILE,
+  COVER_BY_FILE,
+  FLAG_BY_CODE,
+  PLACEHOLDER_PHOTO,
+  PLACEHOLDER_COVER,
+} from "./assetMaps";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Artist Photo Imports ─────────────────────────────────────────────────────
 
-function formatSold(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
-  return `${n}`;
-}
+// ─── Album Cover Imports ──────────────────────────────────────────────────────
 
-const CERT_CONFIG: Record<Certification, { label: string; color: string }> = {
-  none: { label: "—", color: "text-muted-foreground" },
-  gold: { label: "Gold", color: "text-yellow-400" },
-  platinum: { label: "Platinum", color: "text-slate-300" },
-  "multi-platinum": { label: "Multi-Platinum", color: "text-violet-400" },
+// ─── Country / Flag Map ───────────────────────────────────────────────────────
+const FLAG_MAP = FLAG_BY_CODE;
+
+const COUNTRY_NAMES: Record<string, string> = {
+  AU: "Australia", AR: "Argentina", ZA: "South Africa", RU: "Russia",
+  DE: "Germany", NO: "Norway", JP: "Japan", NZ: "New Zealand",
+  SE: "Sweden", FR: "France", BE: "Belgium", US: "United States",
+  IN: "India", BR: "Brazil", DK: "Denmark", CA: "Canada",
+  NL: "Netherlands", UK: "United Kingdom", IE: "Ireland", MX: "Mexico",
+  KR: "South Korea", GH: "Ghana",
 };
 
-const COVER_PLACEHOLDER_COLORS = [
-  "from-violet-600 to-pink-600",
-  "from-blue-600 to-cyan-500",
-  "from-orange-500 to-rose-600",
-  "from-emerald-500 to-teal-600",
-  "from-amber-500 to-orange-600",
-  "from-indigo-600 to-purple-600",
-];
+// ─── Theme Context ────────────────────────────────────────────────────────────
+interface ThemeCtx { isDark: boolean; toggle: () => void; }
+const ThemeContext = createContext<ThemeCtx>({ isDark: true, toggle: () => {} });
+const useTheme = () => useContext(ThemeContext);
 
-function placeholderGradient(id: string): string {
-  const idx = id.charCodeAt(id.length - 1) % COVER_PLACEHOLDER_COLORS.length;
-  return COVER_PLACEHOLDER_COLORS[idx];
+// Theme-aware class helpers
+function t(dark: string, light: string, isDark: boolean) {
+  return isDark ? dark : light;
 }
 
-// ─── Shared Components ────────────────────────────────────────────────────────
+// ─── Palette constants ────────────────────────────────────────────────────────
+// Used inline via the t() helper
+// Dark:  bg #09090f, card #13131c, text #f2f2f8, muted #7070a0, accent #a855f7
+// Light: bg #faf8f4, card rgba(255,255,255,0.85), text #1c1917, muted #78716c, accent #9333ea
 
-function CertBadge({ cert }: { cert: Certification }) {
-  if (cert === "none") return null;
-  const { label, color } = CERT_CONFIG[cert];
+// ─── Asset resolution (API stores filenames/keys; UI needs resolved URLs) ─────
+const PHOTO_URL_TO_FILE: Record<string, string> = Object.fromEntries(
+  Object.entries(PHOTO_BY_FILE).map(([file, url]) => [url, file])
+);
+const COVER_URL_TO_FILE: Record<string, string> = Object.fromEntries(
+  Object.entries(COVER_BY_FILE).map(([file, url]) => [url, file])
+);
+
+function resolvePhoto(key: string): string {
+  if (!key) return PLACEHOLDER_PHOTO;
+  if (PHOTO_BY_FILE[key]) return PHOTO_BY_FILE[key];
+  if (key.startsWith("http") || key.startsWith("data:") || key.startsWith("/")) return key;
+  return PLACEHOLDER_PHOTO;
+}
+
+function resolveCover(key: string): string {
+  if (!key) return PLACEHOLDER_COVER;
+  if (COVER_BY_FILE[key]) return COVER_BY_FILE[key];
+  if (key.startsWith("http") || key.startsWith("data:") || key.startsWith("/")) return key;
+  return PLACEHOLDER_COVER;
+}
+
+function resolveFlag(countryCode: string, flagKey?: string): string {
+  return FLAG_BY_CODE[countryCode] || (flagKey ? FLAG_BY_CODE[flagKey] : undefined) || PLACEHOLDER_PHOTO;
+}
+
+function resolveArtist(a: Artist): Artist {
+  return {
+    ...a,
+    photo: resolvePhoto(a.photo),
+    flag: resolveFlag(a.countryCode, a.flag),
+  };
+}
+
+function resolveAlbum(al: Album): Album {
+  return {
+    ...al,
+    cover: resolveCover(al.cover),
+    artistPhoto: resolvePhoto(al.artistPhoto),
+  };
+}
+
+function toApiArtist(a: Artist): catalogApi.ArtistInput {
+  const photoKey = PHOTO_URL_TO_FILE[a.photo] || a.photo || "";
+  return {
+    name: a.name,
+    photo: photoKey,
+    flag: a.countryCode,
+    countryCode: a.countryCode,
+    type: a.type,
+    groupSize: a.groupSize,
+    since: a.since,
+  };
+}
+
+function toApiAlbum(al: Album): catalogApi.AlbumInput {
+  const coverKey = COVER_URL_TO_FILE[al.cover] || al.cover || "";
+  return {
+    title: al.title,
+    artistId: al.artistId,
+    label: al.label,
+    year: al.year,
+    sold: al.sold,
+    tracks: al.tracks,
+    singles: al.singles,
+    cert: al.cert,
+    streaming: al.streaming,
+    cover: coverKey,
+  };
+}
+
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function sumSold(albumList: Album[]): string {
+  const total = albumList.reduce((acc, al) => {
+    const raw = al.sold.replace(/,/g, "");
+    const n = parseFloat(raw);
+    const mult = /[Mm]/i.test(raw) ? 1000 : 1;
+    return acc + (isNaN(n) ? 0 : n * mult);
+  }, 0);
+  if (total >= 1000) return `${(total / 1000).toFixed(1).replace(/\.0$/, "")}M`;
+  return `${Math.round(total)}K`;
+}
+
+// ─── Shared UI Helpers ────────────────────────────────────────────────────────
+function CertBadge({ cert, isDark }: { cert: Cert; isDark: boolean }) {
+  if (!cert) return null;
+  const color =
+    cert === "Platinum" ? "text-[#cad5e2] border-[rgba(202,213,226,0.35)]" :
+    cert === "Gold" ? "text-[#fdc700] border-[rgba(253,199,0,0.35)]" :
+    "text-[#b9f2ff] border-[rgba(185,242,255,0.35)]";
+  const lightColor =
+    cert === "Platinum" ? "text-[#6b7280] border-[rgba(107,114,128,0.4)]" :
+    cert === "Gold" ? "text-[#b45309] border-[rgba(180,83,9,0.4)]" :
+    "text-[#0891b2] border-[rgba(8,145,178,0.4)]";
   return (
-    <span className={`text-xs font-semibold uppercase tracking-wider ${color} border border-current/30 rounded px-2 py-0.5`}>
+    <span className={`inline-flex items-center px-[7.8px] py-[2.55px] border rounded-[3.5px] text-[10.5px] font-semibold tracking-[0.525px] uppercase ${isDark ? color : lightColor}`}>
+      {cert}
+    </span>
+  );
+}
+
+function StreamingBadge({ platform }: { platform: StreamingPlatform }) {
+  const styles: Record<StreamingPlatform, string> = {
+    SP: "bg-[rgba(29,185,84,0.2)] text-[#1db954]",
+    AM: "bg-[rgba(252,60,68,0.2)] text-[#fc3c44]",
+    AZ: "bg-[rgba(0,168,225,0.2)] text-[#00a8e1]",
+  };
+  return (
+    <span className={`inline-flex items-center px-[5.25px] py-[1.75px] rounded-[3.5px] text-[10.5px] font-bold ${styles[platform]}`}>
+      {platform}
+    </span>
+  );
+}
+
+function TypeBadge({ type, groupSize, isDark, artistName, detailMode }: { type: ArtistType; groupSize?: number; isDark: boolean; artistName?: string; detailMode?: boolean }) {
+  if (type === "Solo") {
+    return (
+      <span className={`inline-flex items-center px-[7px] py-[1.75px] rounded-full text-[10.5px] font-medium ${isDark ? "bg-[rgba(246,51,154,0.15)] text-[#fb64b6]" : "bg-[rgba(147,51,234,0.12)] text-[#9333ea]"}`}>
+        Solo Artist
+      </span>
+    );
+  }
+  const tooltip = groupSize && artistName ? `${groupSize} members in ${artistName}` : undefined;
+  const label = detailMode && groupSize ? `${groupSize} members of Group` : "Group";
+  return (
+    <span title={detailMode ? undefined : tooltip} className={`inline-flex items-center px-[7px] py-[1.75px] rounded-full text-[10.5px] font-medium cursor-default ${isDark ? "bg-[rgba(168,85,247,0.15)] text-[#a855f7]" : "bg-[rgba(147,51,234,0.12)] text-[#9333ea]"}`}>
       {label}
     </span>
   );
 }
 
-function StreamingIcons({ platforms }: { platforms: StreamingPlatform[] }) {
-  return (
-    <div className="flex gap-1.5 items-center">
-      {platforms.includes("spotify") && (
-        <span title="Spotify" className="text-xs bg-[#1DB954]/20 text-[#1DB954] font-bold rounded px-1.5 py-0.5">SP</span>
-      )}
-      {platforms.includes("apple") && (
-        <span title="Apple Music" className="text-xs bg-[#fc3c44]/20 text-[#fc3c44] font-bold rounded px-1.5 py-0.5">AM</span>
-      )}
-      {platforms.includes("amazon") && (
-        <span title="Amazon Music" className="text-xs bg-[#00a8e1]/20 text-[#00a8e1] font-bold rounded px-1.5 py-0.5">AZ</span>
-      )}
-    </div>
-  );
+// Theme-aware select/input shared classes
+function inputCls(isDark: boolean) {
+  return isDark
+    ? "bg-[#1a1a26] border-[rgba(255,255,255,0.08)] text-[#f2f2f8] placeholder:text-[#7070a0] focus:border-[rgba(168,85,247,0.5)]"
+    : "bg-[#f0ebe2] border-[rgba(0,0,0,0.1)] text-[#1c1917] placeholder:text-[#78716c] focus:border-[rgba(147,51,234,0.4)]";
 }
 
-function CoverImage({ url, title, size = "md" }: { url: string; title: string; size?: "sm" | "md" | "lg" | "xl" }) {
-  const sizeClass = { sm: "w-12 h-12", md: "w-16 h-16", lg: "w-28 h-28", xl: "w-56 h-56" }[size];
-  const [failed, setFailed] = useState(false);
-  const gradient = COVER_PLACEHOLDER_COLORS[title.charCodeAt(0) % COVER_PLACEHOLDER_COLORS.length];
-  return (
-    <div className={`${sizeClass} rounded-lg overflow-hidden flex-shrink-0 bg-muted`}>
-      {!failed && url ? (
-        <img
-          src={url}
-          alt={title}
-          className="w-full h-full object-cover"
-          onError={() => setFailed(true)}
-        />
-      ) : (
-        <div className={`w-full h-full bg-gradient-to-br ${gradient} flex items-center justify-center`}>
-          <Disc3 size={size === "sm" ? 14 : size === "md" ? 20 : size === "lg" ? 32 : 48} className="text-white/50" />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ArtistAvatar({ artist, size = "md" }: { artist: Artist; size?: "sm" | "md" | "lg" | "xl" }) {
-  const sizeClass = { sm: "w-10 h-10 text-base", md: "w-16 h-16 text-2xl", lg: "w-24 h-24 text-4xl", xl: "w-48 h-48 text-6xl" }[size];
-  const initials = artist.name.split(" ").map(w => w[0]).slice(0, 2).join("");
-  const gradient = COVER_PLACEHOLDER_COLORS[artist.id.charCodeAt(artist.id.length - 1) % COVER_PLACEHOLDER_COLORS.length];
-  const [failed, setFailed] = useState(false);
-  if (artist.photoUrl && !failed) {
-    return (
-      <div className={`${sizeClass} rounded-full overflow-hidden flex-shrink-0 bg-muted`}>
-        <img src={artist.photoUrl} alt={artist.name} className="w-full h-full object-cover" onError={() => setFailed(true)} />
-      </div>
-    );
-  }
-  return (
-    <div className={`${sizeClass} rounded-full bg-gradient-to-br ${gradient} flex items-center justify-center font-bold text-white flex-shrink-0`}>
-      {initials}
-    </div>
-  );
-}
-
-function CountryFlag({ countryCode, country }: { countryCode: string; country: string }) {
-  const code = countryCode.toLowerCase();
-  const abbr = countryCode.toUpperCase();
-  return (
-    <Tooltip.Provider delayDuration={200}>
-      <Tooltip.Root>
-        <Tooltip.Trigger asChild>
-          <span className="inline-flex items-center gap-1.5 cursor-default select-none">
-            <span className="w-10 h-6 rounded overflow-hidden flex-shrink-0 shadow-sm border border-white/10">
-              <img
-                src={`https://flagcdn.com/w40/${code}.png`}
-                alt={country}
-                className="w-full h-full object-cover"
-              />
-            </span>
-            <span className="text-xs font-semibold text-muted-foreground tracking-wider">{abbr}</span>
-          </span>
-        </Tooltip.Trigger>
-        <Tooltip.Portal>
-          <Tooltip.Content
-            side="top"
-            sideOffset={5}
-            className="bg-popover text-popover-foreground text-xs font-medium px-2.5 py-1.5 rounded-lg shadow-lg border border-border z-50"
-          >
-            {country}
-            <Tooltip.Arrow className="fill-popover" />
-          </Tooltip.Content>
-        </Tooltip.Portal>
-      </Tooltip.Root>
-    </Tooltip.Provider>
-  );
-}
-
-// ─── Form Components ──────────────────────────────────────────────────────────
-
-interface ArtistFormData {
-  name: string;
-  country: string;
-  countryFlag: string;
-  countryCode: string;
-  photoUrl: string;
-  type: ArtistType;
-  memberCount: string;
-  activeSince: string;
-}
-
-const COUNTRIES: { name: string; code: string; flag: string }[] = [
-  { name: "Argentina",      code: "ar", flag: "🇦🇷" },
-  { name: "Australia",      code: "au", flag: "🇦🇺" },
-  { name: "Belgium",        code: "be", flag: "🇧🇪" },
-  { name: "Brazil",         code: "br", flag: "🇧🇷" },
-  { name: "Canada",         code: "ca", flag: "🇨🇦" },
-  { name: "China",          code: "cn", flag: "🇨🇳" },
-  { name: "Denmark",        code: "dk", flag: "🇩🇰" },
-  { name: "Finland",        code: "fi", flag: "🇫🇮" },
-  { name: "France",         code: "fr", flag: "🇫🇷" },
-  { name: "Germany",        code: "de", flag: "🇩🇪" },
-  { name: "Ghana",          code: "gh", flag: "🇬🇭" },
-  { name: "India",          code: "in", flag: "🇮🇳" },
-  { name: "Ireland",        code: "ie", flag: "🇮🇪" },
-  { name: "Italy",          code: "it", flag: "🇮🇹" },
-  { name: "Japan",          code: "jp", flag: "🇯🇵" },
-  { name: "Mexico",         code: "mx", flag: "🇲🇽" },
-  { name: "Netherlands",    code: "nl", flag: "🇳🇱" },
-  { name: "New Zealand",    code: "nz", flag: "🇳🇿" },
-  { name: "Nigeria",        code: "ng", flag: "🇳🇬" },
-  { name: "Norway",         code: "no", flag: "🇳🇴" },
-  { name: "Portugal",       code: "pt", flag: "🇵🇹" },
-  { name: "Russia",         code: "ru", flag: "🇷🇺" },
-  { name: "South Africa",   code: "za", flag: "🇿🇦" },
-  { name: "South Korea",    code: "kr", flag: "🇰🇷" },
-  { name: "Spain",          code: "es", flag: "🇪🇸" },
-  { name: "Sweden",         code: "se", flag: "🇸🇪" },
-  { name: "United Kingdom", code: "gb", flag: "🇬🇧" },
-  { name: "United States",  code: "us", flag: "🇺🇸" },
-];
-
-function ArtistFormModal({
-  open, onClose, initial, onSave,
-}: {
-  open: boolean;
-  onClose: () => void;
-  initial?: Artist;
-  onSave: (data: Omit<Artist, "id">) => void | Promise<void>;
-}) {
-  const blank: ArtistFormData = { name: "", country: "", countryFlag: "", countryCode: "", photoUrl: "", type: "solo", memberCount: "", activeSince: "" };
-  const toFormData = (a: Artist): ArtistFormData => ({
-    name: a.name, country: a.country, countryFlag: a.countryFlag, countryCode: a.countryCode,
-    photoUrl: a.photoUrl ?? "",
-    type: a.type, memberCount: a.memberCount?.toString() ?? "", activeSince: a.activeSince.toString(),
-  });
-  const [form, setForm] = useState<ArtistFormData>(initial ? toFormData(initial) : blank);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (open) setForm(initial ? toFormData(initial) : blank);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, initial?.id]);
-
-  const set = (k: keyof ArtistFormData, v: string) => setForm(f => ({ ...f, [k]: v }));
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!form.name.trim() || !form.activeSince || saving) return;
-    const country = COUNTRIES.find(c => c.code === form.countryCode);
-    setSaving(true);
-    try {
-      await onSave({
-        name: form.name.trim(),
-        country: country?.name ?? form.country.trim(),
-        countryFlag: (country?.flag ?? form.countryFlag.trim()) || "🎵",
-        countryCode: form.countryCode || "un",
-        photoUrl: form.photoUrl.trim(),
-        type: form.type,
-        memberCount: form.type === "group" && form.memberCount ? parseInt(form.memberCount) : undefined,
-        activeSince: parseInt(form.activeSince),
-      });
-      onClose();
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <Dialog.Root open={open} onOpenChange={v => !v && onClose()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 bg-black/70 backdrop-blur-sm z-40" />
-        <Dialog.Content aria-describedby={undefined} className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-lg bg-card border border-border rounded-2xl p-6 shadow-2xl">
-          <div className="flex items-center justify-between mb-5">
-            <Dialog.Title className="text-lg font-semibold text-foreground">
-              {initial ? "Edit Artist" : "Add Artist"}
-            </Dialog.Title>
-            <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
-              <X size={18} />
-            </button>
-          </div>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="text-sm text-muted-foreground mb-1 block">Artist Name *</label>
-              <input value={form.name} onChange={e => set("name", e.target.value)} required
-                className="w-full bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-            </div>
-            <div>
-              <label className="text-sm text-muted-foreground mb-1 block">Country</label>
-              <div className="flex items-center gap-3">
-                <select
-                  value={form.countryCode}
-                  onChange={e => {
-                    const c = COUNTRIES.find(x => x.code === e.target.value);
-                    setForm(f => ({ ...f, countryCode: e.target.value, country: c?.name ?? "", countryFlag: c?.flag ?? "" }));
-                  }}
-                  className="flex-1 bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                >
-                  <option value="">— Select country —</option>
-                  {COUNTRIES.map(c => (
-                    <option key={c.code} value={c.code}>{c.name} – {c.code.toUpperCase()}</option>
-                  ))}
-                </select>
-                {form.countryCode && (
-                  <span className="w-12 h-8 rounded overflow-hidden flex-shrink-0 border border-white/10 shadow-sm">
-                    <img src={`https://flagcdn.com/w40/${form.countryCode}.png`} alt={form.country} className="w-full h-full object-cover" />
-                  </span>
-                )}
-              </div>
-            </div>
-            <div>
-              <label className="text-sm text-muted-foreground mb-1 block">Artist Photo URL</label>
-              <div className="flex items-center gap-3">
-                <input value={form.photoUrl} onChange={e => set("photoUrl", e.target.value)} placeholder="https://images.unsplash.com/..."
-                  className="flex-1 bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-                {form.photoUrl && (
-                  <div className="w-12 h-12 rounded-full overflow-hidden flex-shrink-0 border border-white/10 bg-muted">
-                    <img src={form.photoUrl} alt="preview" className="w-full h-full object-cover"
-                      onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-sm text-muted-foreground mb-1 block">Type</label>
-                <select value={form.type} onChange={e => set("type", e.target.value as ArtistType)}
-                  className="w-full bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary">
-                  <option value="solo">Solo</option>
-                  <option value="group">Group</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-sm text-muted-foreground mb-1 block">Active Since *</label>
-                <input type="number" value={form.activeSince} onChange={e => set("activeSince", e.target.value)} required min="1900" max="2024"
-                  className="w-full bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-              </div>
-            </div>
-            {form.type === "group" && (
-              <div>
-                <label className="text-sm text-muted-foreground mb-1 block">Number of Members</label>
-                <input type="number" value={form.memberCount} onChange={e => set("memberCount", e.target.value)} min="2"
-                  className="w-full bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-              </div>
-            )}
-            <div className="flex gap-3 pt-2">
-              <button type="button" onClick={onClose}
-                className="flex-1 bg-secondary text-secondary-foreground rounded-lg py-2 text-sm font-medium hover:bg-secondary/80 transition-colors">
-                Cancel
-              </button>
-              <button type="submit"
-                className="flex-1 bg-primary text-primary-foreground rounded-lg py-2 text-sm font-medium hover:bg-primary/90 transition-colors">
-                {initial ? "Save Changes" : "Add Artist"}
-              </button>
-            </div>
-          </form>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
-  );
-}
-
-interface AlbumFormData {
+// ─── Reusable Confirmation Dialog ─────────────────────────────────────────────
+interface ConfirmDialogProps {
   title: string;
-  artistId: string;
-  coverUrl: string;
-  label: string;
-  releaseYear: string;
-  trackCount: string;
-  singleCount: string;
-  albumsSold: string;
-  certification: Certification;
-  streaming: StreamingPlatform[];
-}
-
-function AlbumFormModal({
-  open, onClose, initial, artists, defaultArtistId, onSave,
-}: {
-  open: boolean;
-  onClose: () => void;
-  initial?: Album;
-  artists: Artist[];
-  defaultArtistId?: string;
-  onSave: (data: Omit<Album, "id">) => void | Promise<void>;
-}) {
-  const blank: AlbumFormData = {
-    title: "", artistId: defaultArtistId ?? artists[0]?.id ?? "", coverUrl: "", label: "",
-    releaseYear: "", trackCount: "", singleCount: "", albumsSold: "", certification: "none", streaming: [],
-  };
-  const [form, setForm] = useState<AlbumFormData>(
-    initial
-      ? { title: initial.title, artistId: initial.artistId, coverUrl: initial.coverUrl, label: initial.label, releaseYear: initial.releaseYear.toString(), trackCount: initial.trackCount.toString(), singleCount: initial.singleCount.toString(), albumsSold: initial.albumsSold.toString(), certification: initial.certification, streaming: initial.streaming }
-      : blank
-  );
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setForm(initial
-        ? { title: initial.title, artistId: initial.artistId, coverUrl: initial.coverUrl, label: initial.label, releaseYear: initial.releaseYear.toString(), trackCount: initial.trackCount.toString(), singleCount: initial.singleCount.toString(), albumsSold: initial.albumsSold.toString(), certification: initial.certification, streaming: initial.streaming }
-        : { ...blank, artistId: defaultArtistId ?? artists[0]?.id ?? "" }
-      );
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, initial?.id]);
-
-  const set = (k: keyof AlbumFormData, v: string | StreamingPlatform[]) => setForm(f => ({ ...f, [k]: v }));
-
-  function toggleStream(p: StreamingPlatform) {
-    setForm(f => ({
-      ...f,
-      streaming: f.streaming.includes(p) ? f.streaming.filter(x => x !== p) : [...f.streaming, p],
-    }));
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!form.title.trim() || !form.artistId || !form.releaseYear || saving) return;
-    setSaving(true);
-    try {
-      await onSave({
-        artistId: form.artistId,
-        title: form.title.trim(),
-        coverUrl: form.coverUrl.trim(),
-        label: form.label.trim(),
-        releaseYear: parseInt(form.releaseYear),
-        trackCount: parseInt(form.trackCount) || 0,
-        singleCount: parseInt(form.singleCount) || 0,
-        albumsSold: parseInt(form.albumsSold) || 0,
-        certification: form.certification,
-        streaming: form.streaming,
-      });
-      onClose();
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <Dialog.Root open={open} onOpenChange={v => !v && onClose()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 bg-black/70 backdrop-blur-sm z-40" />
-        <Dialog.Content aria-describedby={undefined} className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-lg bg-card border border-border rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
-          <div className="flex items-center justify-between mb-5">
-            <Dialog.Title className="text-lg font-semibold text-foreground">
-              {initial ? "Edit Album" : "Add Album"}
-            </Dialog.Title>
-            <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
-              <X size={18} />
-            </button>
-          </div>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="text-sm text-muted-foreground mb-1 block">Album Title *</label>
-              <input value={form.title} onChange={e => set("title", e.target.value)} required
-                className="w-full bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-            </div>
-            <div>
-              <label className="text-sm text-muted-foreground mb-1 block">Artist *</label>
-              <select value={form.artistId} onChange={e => set("artistId", e.target.value)}
-                className="w-full bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary">
-                {artists.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="text-sm text-muted-foreground mb-1 block">Cover Image URL</label>
-              <input value={form.coverUrl} onChange={e => set("coverUrl", e.target.value)} placeholder="https://..."
-                className="w-full bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-              {form.coverUrl && (
-                <div className="mt-2 w-16 h-16 rounded-lg overflow-hidden bg-muted">
-                  <img src={form.coverUrl} alt="preview" className="w-full h-full object-cover" />
-                </div>
-              )}
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-sm text-muted-foreground mb-1 block">Record Label</label>
-                <input value={form.label} onChange={e => set("label", e.target.value)}
-                  className="w-full bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-              </div>
-              <div>
-                <label className="text-sm text-muted-foreground mb-1 block">Release Year *</label>
-                <input type="number" value={form.releaseYear} onChange={e => set("releaseYear", e.target.value)} required min="1950" max="2025"
-                  className="w-full bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-              </div>
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <label className="text-sm text-muted-foreground mb-1 block">Tracks</label>
-                <input type="number" value={form.trackCount} onChange={e => set("trackCount", e.target.value)} min="1"
-                  className="w-full bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-              </div>
-              <div>
-                <label className="text-sm text-muted-foreground mb-1 block">Singles</label>
-                <input type="number" value={form.singleCount} onChange={e => set("singleCount", e.target.value)} min="0"
-                  className="w-full bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-              </div>
-              <div>
-                <label className="text-sm text-muted-foreground mb-1 block">Albums Sold</label>
-                <input type="number" value={form.albumsSold} onChange={e => set("albumsSold", e.target.value)} min="0"
-                  className="w-full bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
-              </div>
-            </div>
-            <div>
-              <label className="text-sm text-muted-foreground mb-1 block">Certification</label>
-              <select value={form.certification} onChange={e => set("certification", e.target.value as Certification)}
-                className="w-full bg-input-background border border-border rounded-lg px-3 py-2 text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary">
-                <option value="none">None</option>
-                <option value="gold">Gold</option>
-                <option value="platinum">Platinum</option>
-                <option value="multi-platinum">Multi-Platinum</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-sm text-muted-foreground mb-2 block">Streaming Platforms</label>
-              <div className="flex gap-2">
-                {(["spotify", "apple", "amazon"] as StreamingPlatform[]).map(p => (
-                  <button key={p} type="button" onClick={() => toggleStream(p)}
-                    className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all ${form.streaming.includes(p) ? "bg-primary border-primary text-white" : "border-border text-muted-foreground hover:border-primary/50"}`}>
-                    {p === "spotify" ? "Spotify" : p === "apple" ? "Apple Music" : "Amazon"}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="flex gap-3 pt-2">
-              <button type="button" onClick={onClose}
-                className="flex-1 bg-secondary text-secondary-foreground rounded-lg py-2 text-sm font-medium hover:bg-secondary/80 transition-colors">
-                Cancel
-              </button>
-              <button type="submit"
-                className="flex-1 bg-primary text-primary-foreground rounded-lg py-2 text-sm font-medium hover:bg-primary/90 transition-colors">
-                {initial ? "Save Changes" : "Add Album"}
-              </button>
-            </div>
-          </form>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
-  );
-}
-
-function DeleteAlbumModal({
-  open, onClose, album, artist, onConfirm,
-}: {
-  open: boolean;
-  onClose: () => void;
-  album: Album | null;
-  artist: Artist | null;
+  body: string;
+  confirmLabel?: string;
+  image?: string;
+  imageShape?: "circle" | "square";
   onConfirm: () => void;
-}) {
-  if (!album || !artist) return null;
-  return (
-    <Dialog.Root open={open} onOpenChange={v => !v && onClose()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 bg-black/70 backdrop-blur-sm z-40" />
-        <Dialog.Content aria-describedby={undefined} className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-sm bg-card border border-border rounded-2xl p-6 shadow-2xl">
-          <div className="flex items-center justify-between mb-4">
-            <Dialog.Title className="text-base font-semibold text-foreground">Delete Album?</Dialog.Title>
-            <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
-              <X size={16} />
-            </button>
-          </div>
-          <p className="text-sm text-muted-foreground mb-4">This will permanently remove this album from the catalog.</p>
-          <div className="flex items-center gap-3 bg-secondary rounded-xl p-3 mb-5">
-            <CoverImage url={album.coverUrl} title={album.title} size="sm" />
-            <div>
-              <p className="text-sm font-medium text-foreground">{album.title}</p>
-              <p className="text-xs text-muted-foreground">{artist.name} · {album.releaseYear}</p>
-            </div>
-          </div>
-          <div className="flex gap-3">
-            <button onClick={onClose}
-              className="flex-1 bg-secondary text-secondary-foreground rounded-lg py-2 text-sm font-medium hover:bg-secondary/80 transition-colors">
-              Cancel
-            </button>
-            <button onClick={() => { onConfirm(); onClose(); }}
-              className="flex-1 bg-destructive text-destructive-foreground rounded-lg py-2 text-sm font-medium hover:bg-destructive/90 transition-colors">
-              Delete
-            </button>
-          </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
-  );
+  onCancel: () => void;
+  isDark: boolean;
 }
-
-function DeleteArtistModal({
-  open, onClose, artist, albumCount, onConfirm,
-}: {
-  open: boolean;
-  onClose: () => void;
-  artist: Artist | null;
-  albumCount: number;
-  onConfirm: () => void;
-}) {
-  if (!artist) return null;
+function ConfirmDialog({ title, body, confirmLabel = "Delete", image, imageShape = "square", onConfirm, onCancel, isDark }: ConfirmDialogProps) {
+  const card = isDark ? "bg-[#13131c] border-[rgba(255,255,255,0.08)]" : "bg-white border-[rgba(0,0,0,0.1)]";
+  const heading = isDark ? "text-[#f2f2f8]" : "text-[#1c1917]";
+  const sub = isDark ? "text-[#7070a0]" : "text-[#78716c]";
   return (
-    <Dialog.Root open={open} onOpenChange={v => !v && onClose()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 bg-black/70 backdrop-blur-sm z-40" />
-        <Dialog.Content aria-describedby={undefined} className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-sm bg-card border border-border rounded-2xl p-6 shadow-2xl">
-          <div className="flex items-center justify-between mb-4">
-            <Dialog.Title className="text-base font-semibold text-foreground">Delete Artist?</Dialog.Title>
-            <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
-              <X size={16} />
-            </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-[rgba(0,0,0,0.55)]" onClick={onCancel} />
+      <div className={`relative border rounded-[14px] w-[360px] p-[21px] shadow-[0px_25px_50px_-12px_rgba(0,0,0,0.7)] ${card}`}>
+        {image && (
+          <div className={`mb-[14px] overflow-hidden ${imageShape === "circle" ? "rounded-full size-[64px]" : "rounded-[10px] w-[64px] h-[64px]"}`} style={{ background: isDark ? "#1a1a26" : "#f0ebe2" }}>
+            <img src={image} alt="" className="w-full h-full object-cover" />
           </div>
-          <p className="text-sm text-muted-foreground mb-4">
-            This will permanently remove this artist and all their albums from the catalog.
-          </p>
-          <div className="flex items-center gap-3 bg-secondary rounded-xl p-3 mb-5">
-            <ArtistAvatar artist={artist} size="sm" />
-            <div>
-              <p className="text-sm font-medium text-foreground">{artist.name}</p>
-              <p className="text-xs text-muted-foreground">
-                {artist.country} · {albumCount} {albumCount === 1 ? "album" : "albums"} will be deleted
-              </p>
-            </div>
-          </div>
-          <div className="flex gap-3">
-            <button onClick={onClose}
-              className="flex-1 bg-secondary text-secondary-foreground rounded-lg py-2 text-sm font-medium hover:bg-secondary/80 transition-colors">
-              Cancel
-            </button>
-            <button onClick={() => { onConfirm(); onClose(); }}
-              className="flex-1 bg-destructive text-destructive-foreground rounded-lg py-2 text-sm font-medium hover:bg-destructive/90 transition-colors">
-              Delete Artist
-            </button>
-          </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+        )}
+        <h2 className={`text-[17.5px] font-semibold mb-[10px] ${heading}`}>{title}</h2>
+        <p className={`text-[12.25px] leading-[18px] mb-[21px] ${sub}`}>{body}</p>
+        <div className="flex gap-[10.5px]">
+          <button onClick={onCancel} className={`flex-1 py-[10.5px] rounded-[10.5px] border text-[12.25px] font-medium transition-colors ${isDark ? "border-[rgba(255,255,255,0.08)] text-[#7070a0] hover:text-[#f2f2f8]" : "border-[rgba(0,0,0,0.1)] text-[#78716c] hover:text-[#1c1917]"}`}>
+            Cancel
+          </button>
+          <button onClick={onConfirm} className="flex-1 py-[10.5px] rounded-[10.5px] bg-red-600 text-white text-[12.25px] font-medium hover:bg-red-700 transition-colors">
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
   );
-}
-
-// ─── Theme ────────────────────────────────────────────────────────────────────
-
-function useTheme() {
-  const [dark, setDark] = useState<boolean>(() => {
-    const stored = localStorage.getItem("theme");
-    if (stored) return stored === "dark";
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
-  });
-
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", dark);
-    localStorage.setItem("theme", dark ? "dark" : "light");
-  }, [dark]);
-
-  return { dark, toggle: () => setDark(d => !d) };
 }
 
 // ─── NavBar ───────────────────────────────────────────────────────────────────
-
 export function NavBar() {
+  const { isDark, toggle } = useTheme();
   const nav = useNavigate();
-  const { pathname } = useLocation();
-  const { dark, toggle } = useTheme();
-  const isArtists = pathname === "/" || pathname.startsWith("/artists");
-  const isAlbums = pathname.startsWith("/albums");
+  const loc = useLocation();
+  const activeTab = loc.pathname.startsWith("/albums") ? "albums" : "artists";
+  const nb = isDark ? "bg-[rgba(9,9,15,0.85)] border-[rgba(255,255,255,0.08)]" : "bg-[rgba(250,248,244,0.85)] border-[rgba(0,0,0,0.1)]";
+  const logo = isDark ? "text-[#f2f2f8]" : "text-[#1c1917]";
+  const activeTab_ = isDark ? "bg-[rgba(168,85,247,0.2)] text-[#a855f7]" : "bg-[rgba(147,51,234,0.15)] text-[#9333ea]";
+  const inactiveTab = isDark ? "text-[#7070a0] hover:text-[#a8a8c0]" : "text-[#78716c] hover:text-[#1c1917]";
+  const toggleBtn = isDark ? "border-[rgba(255,255,255,0.08)] text-[#7070a0] hover:text-[#f2f2f8]" : "border-[rgba(0,0,0,0.1)] text-[#78716c] hover:text-[#1c1917]";
   return (
-    <header className="sticky top-0 z-30 border-b border-border bg-background/80 backdrop-blur-md">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center gap-6">
-        <button onClick={() => nav("/artists")} className="flex items-center gap-2 group">
-          <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-violet-500 to-pink-500 flex items-center justify-center">
-            <Music size={20} className="text-white" />
+    <div className={`backdrop-blur-md w-full shrink-0 border-b sticky top-0 z-40 ${nb}`}>
+      <div className="flex items-center gap-[21px] h-[49px] px-[21px] max-w-[1120px] mx-auto">
+        <div className="flex items-center gap-[7px] shrink-0">
+          <div className="rounded-[14.5px] size-[38.5px] flex items-center justify-center shrink-0" style={{ background: "linear-gradient(135deg,rgb(142,81,255) 0%,rgb(246,51,154) 100%)" }}>
+            <Music className="w-5 h-5 text-white" strokeWidth={1.67} />
           </div>
-          <span className="font-bold text-2xl text-foreground tracking-tight hidden sm:block" style={{ fontFamily: "'Playfair Display', serif" }}>
+          <span className={`text-[21px] tracking-[-0.525px] leading-[28px] whitespace-nowrap ${logo}`} style={{ fontFamily: "'Playfair Display', Georgia, serif", fontWeight: 700 }}>
             Modern Music Catalog
           </span>
-        </button>
-        <nav className="flex items-center gap-1">
-          <button
-            onClick={() => nav("/artists")}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${isArtists ? "bg-primary/20 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
-            Artists
-          </button>
-          <button
-            onClick={() => nav("/albums")}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${isAlbums ? "bg-primary/20 text-primary" : "text-muted-foreground hover:text-foreground"}`}>
-            Albums
-          </button>
-        </nav>
-        <div className="ml-auto">
-          <button
-            onClick={toggle}
-            aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:border-primary/40 transition-all text-sm font-medium">
-            {dark ? <Sun size={15} /> : <Moon size={15} />}
-            {dark ? "Light" : "Dark"}
-          </button>
         </div>
+        <div className="flex items-center gap-[3.5px]">
+          {([
+            { tab: "artists" as const, path: "/artists" },
+            { tab: "albums" as const, path: "/albums" },
+          ]).map(({ tab, path }) => (
+            <button key={tab} onClick={() => nav(path)}
+              className={`px-[10.5px] py-[5.25px] rounded-[10.5px] text-[12.25px] font-medium capitalize transition-colors ${activeTab === tab ? activeTab_ : inactiveTab}`}>
+              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+            </button>
+          ))}
+        </div>
+        <div className="flex-1" />
+        <button onClick={toggle} className={`flex items-center gap-[7px] px-[11.3px] py-[6.05px] rounded-[10.5px] border text-[12.25px] font-medium transition-colors ${toggleBtn}`}>
+          {isDark ? <Sun className="w-[14px] h-[14px]" /> : <Moon className="w-[14px] h-[14px]" />}
+          {isDark ? "Light" : "Dark"}
+        </button>
       </div>
-    </header>
+    </div>
   );
 }
 
 // ─── Artists View ─────────────────────────────────────────────────────────────
-
-function ArtistsView({
-  artists, albums, onSelect, onAdd, onEdit, onDelete,
-}: {
+interface ArtistsViewProps {
   artists: Artist[];
   albums: Album[];
-  onSelect: (id: string) => void;
-  onAdd: () => void;
-  onEdit: (a: Artist) => void;
-  onDelete: (a: Artist) => void;
-}) {
+  onSelectArtist: (id: string) => void;
+  onAddArtist: () => void;
+  onEditArtist: (artist: Artist) => void;
+  onDeleteArtist: (artist: Artist) => void;
+}
+function ArtistsView({ artists, albums, onSelectArtist, onAddArtist, onEditArtist, onDeleteArtist }: ArtistsViewProps) {
+  const { isDark } = useTheme();
   const [search, setSearch] = useState("");
-  const [filterType, setFilterType] = useState<"all" | ArtistType>("all");
-  const [filterCountry, setFilterCountry] = useState("all");
-  const [sort, setSort] = useState<"name" | "activeSince">("name");
+  const [typeFilter, setTypeFilter] = useState<"All" | "Solo" | "Group">("All");
+  const [countryFilter, setCountryFilter] = useState("All");
+  const [sort, setSort] = useState("name-az");
 
-  const countries = useMemo(() => Array.from(new Set(artists.map(a => a.country))).sort(), [artists]);
+  const countries = useMemo(() => {
+    const codes = [...new Set(artists.map((a) => a.countryCode))].sort((a, b) => (COUNTRY_NAMES[a] || a).localeCompare(COUNTRY_NAMES[b] || b));
+    return codes;
+  }, [artists]);
 
   const filtered = useMemo(() => {
-    let list = artists;
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter(a => a.name.toLowerCase().includes(q) || a.country.toLowerCase().includes(q));
-    }
-    if (filterType !== "all") list = list.filter(a => a.type === filterType);
-    if (filterCountry !== "all") list = list.filter(a => a.country === filterCountry);
-    list = [...list].sort((a, b) =>
-      sort === "name" ? a.name.localeCompare(b.name) : a.activeSince - b.activeSince
-    );
-    return list;
-  }, [artists, search, filterType, filterCountry, sort]);
+    let arr = artists.filter((a) => {
+      const matchSearch = a.name.toLowerCase().includes(search.toLowerCase());
+      const matchType = typeFilter === "All" || a.type === typeFilter;
+      const matchCountry = countryFilter === "All" || a.countryCode === countryFilter;
+      return matchSearch && matchType && matchCountry;
+    });
+    const albumCountFor = (id: string) => albums.filter((al) => al.artistId === id).length;
+    if (sort === "name-az") arr = [...arr].sort((a, b) => a.name.localeCompare(b.name));
+    else if (sort === "name-za") arr = [...arr].sort((a, b) => b.name.localeCompare(a.name));
+    else if (sort === "most-albums") arr = [...arr].sort((a, b) => albumCountFor(b.id) - albumCountFor(a.id));
+    else if (sort === "oldest") arr = [...arr].sort((a, b) => a.since - b.since);
+    else if (sort === "newest") arr = [...arr].sort((a, b) => b.since - a.since);
+    return arr;
+  }, [artists, albums, search, typeFilter, countryFilter, sort]);
 
-  const albumCountFor = (artistId: string) => albums.filter(al => al.artistId === artistId).length;
+  const albumCountFor = (id: string) => albums.filter((al) => al.artistId === id).length;
+
+  const bg = isDark ? "bg-[#09090f]" : "bg-[#faf8f4]";
+  const card = isDark ? "bg-[#13131c] border-[rgba(255,255,255,0.06)] hover:border-[rgba(168,85,247,0.3)]" : "bg-white border-[rgba(0,0,0,0.07)] hover:border-[rgba(147,51,234,0.3)]";
+  const heading = isDark ? "text-[#f2f2f8]" : "text-[#1c1917]";
+  const muted = isDark ? "text-[#7070a0]" : "text-[#78716c]";
+  const divider = isDark ? "border-[rgba(255,255,255,0.04)]" : "border-[rgba(0,0,0,0.05)]";
+  const selCls = `w-full border rounded-[10.5px] px-[10.5px] py-[7px] text-[12.25px] font-medium focus:outline-none transition-colors ${inputCls(isDark)}`;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "'Playfair Display', serif" }}>Artists</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">{filtered.length} of {artists.length} artists</p>
-        </div>
-        <button onClick={onAdd}
-          className="flex items-center gap-2 bg-primary text-primary-foreground rounded-xl px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors">
-          <Plus size={15} /> Add Artist
-        </button>
-      </div>
-
-      {/* Toolbar */}
-      <div className="flex flex-wrap gap-3 mb-6">
-        <div className="relative flex-1 min-w-[200px]">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search artists..."
-            className="w-full bg-secondary border border-border rounded-xl pl-8 pr-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
-        </div>
-        <select value={filterType} onChange={e => setFilterType(e.target.value as "all" | ArtistType)}
-          className="bg-secondary border border-border rounded-xl px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
-          <option value="all">All Types</option>
-          <option value="solo">Solo</option>
-          <option value="group">Group</option>
-        </select>
-        <select value={filterCountry} onChange={e => setFilterCountry(e.target.value)}
-          className="bg-secondary border border-border rounded-xl px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
-          <option value="all">All Countries</option>
-          {countries.map(c => <option key={c} value={c}>{c}</option>)}
-        </select>
-        <select value={sort} onChange={e => setSort(e.target.value as "name" | "activeSince")}
-          className="bg-secondary border border-border rounded-xl px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
-          <option value="name">Sort: Name</option>
-          <option value="activeSince">Sort: Active Since</option>
-        </select>
-      </div>
-
-      {/* Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-        {filtered.map(artist => (
-          <div key={artist.id}
-            className="group bg-card border border-border rounded-2xl p-4 hover:border-primary/40 hover:shadow-lg hover:shadow-primary/5 transition-all cursor-pointer"
-            onClick={() => onSelect(artist.id)}>
-            <div className="flex items-start gap-3 mb-3">
-              <ArtistAvatar artist={artist} />
-              <div className="flex-1 min-w-0">
-                <h3 className="font-semibold text-xl text-foreground truncate">{artist.name}</h3>
-                <div className="mt-0.5"><CountryFlag countryCode={artist.countryCode} country={artist.country} /></div>
-                <span className={`text-xs font-medium px-2 py-0.5 rounded-full mt-1 inline-block ${artist.type === "group" ? "bg-violet-500/15 text-violet-400" : "bg-pink-500/15 text-pink-400"}`}>
-                  {artist.type === "group" ? `Group · ${artist.memberCount}` : "Solo"}
-                </span>
-              </div>
-            </div>
-            <div className="border-t border-border/50 pt-3 flex items-center justify-between">
-              <div className="text-xs text-muted-foreground">Since {artist.activeSince}</div>
-              <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                <Disc3 size={12} />
-                {albumCountFor(artist.id)} albums
-              </div>
-            </div>
-            <div className="mt-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-all">
-              <button
-                onClick={e => { e.stopPropagation(); onEdit(artist); }}
-                className="flex-1 text-xs text-muted-foreground hover:text-foreground border border-border/50 rounded-lg py-1.5 flex items-center justify-center gap-1 transition-colors">
-                <Pencil size={11} /> Edit
-              </button>
-              <button
-                onClick={e => { e.stopPropagation(); onDelete(artist); }}
-                className="flex-1 text-xs text-muted-foreground hover:text-destructive border border-border/50 hover:border-destructive/50 rounded-lg py-1.5 flex items-center justify-center gap-1 transition-colors">
-                <Trash2 size={11} /> Delete
-              </button>
-            </div>
+    <div className={`min-h-screen ${bg}`}>
+      <div className="max-w-[1120px] mx-auto px-[21px] py-[28px]">
+        <div className="flex items-center justify-between mb-[21px]">
+          <div>
+            <h1 className={`text-[26.25px] leading-[31.5px] ${heading}`} style={{ fontFamily: "'Playfair Display',Georgia,serif", fontWeight: 700 }}>Artists</h1>
+            <p className={`text-[12.25px] font-medium mt-1 ${muted}`}>{filtered.length} of {artists.length} artists</p>
           </div>
-        ))}
-      </div>
-
-      {filtered.length === 0 && (
-        <div className="text-center py-16 text-muted-foreground">
-          <Users size={36} className="mx-auto mb-3 opacity-40" />
-          <p>No artists found</p>
+          <button onClick={onAddArtist} className="flex items-center gap-[7px] px-[14px] py-[8px] rounded-[10.5px] text-[12.25px] font-medium text-white hover:opacity-90 transition-opacity" style={{ background: "linear-gradient(135deg,rgb(142,81,255) 0%,rgb(246,51,154) 100%)" }}>
+            <Plus className="w-[14px] h-[14px]" />
+            Add Artist
+          </button>
         </div>
-      )}
+
+        <div className="flex items-center gap-[10.5px] mb-[21px]">
+          <div className="relative w-1/3">
+            <Search className={`absolute left-[10.5px] top-1/2 -translate-y-1/2 w-[14px] h-[14px] ${muted}`} />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search artists..."
+              className={`w-full border rounded-[10.5px] pl-[35px] pr-[14px] py-[8px] text-[12.25px] focus:outline-none transition-colors ${inputCls(isDark)}`} />
+          </div>
+          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as "All" | "Solo" | "Group")} className={`${selCls} flex-1`}>
+            <option value="All">All Types</option>
+            <option value="Solo">Solo</option>
+            <option value="Group">Group</option>
+          </select>
+          <select value={countryFilter} onChange={(e) => setCountryFilter(e.target.value)} className={`${selCls} flex-1`}>
+            <option value="All">All Countries</option>
+            {countries.map((c) => <option key={c} value={c}>{COUNTRY_NAMES[c] || c}</option>)}
+          </select>
+          <select value={sort} onChange={(e) => setSort(e.target.value)} className={`${selCls} flex-1`}>
+            <option value="name-az">Name A→Z</option>
+            <option value="name-za">Name Z→A</option>
+            <option value="most-albums">Most Albums</option>
+            <option value="oldest">Oldest Active</option>
+            <option value="newest">Newest Active</option>
+          </select>
+        </div>
+
+        <div className="grid grid-cols-3 gap-[14px]">
+          {filtered.map((artist) => {
+            const count = albumCountFor(artist.id);
+            const artistAlbums = albums.filter((al) => al.artistId === artist.id);
+            const sold = sumSold(artistAlbums);
+            return (
+              <div key={artist.id} className={`relative border rounded-[14px] p-[17.5px] group cursor-pointer transition-colors ${card}`}
+                onClick={() => onSelectArtist(artist.id)}>
+                <div className="absolute top-[10px] right-[10px] flex gap-[4px] opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onEditArtist(artist); }}
+                    className={`p-[5px] rounded-[8px] ${isDark ? "bg-[rgba(255,255,255,0.06)] text-[#7070a0] hover:text-[#a855f7] hover:bg-[rgba(168,85,247,0.15)]" : "bg-[rgba(0,0,0,0.04)] text-[#78716c] hover:text-[#9333ea] hover:bg-[rgba(147,51,234,0.1)]"}`}>
+                    <Pencil className="w-[13px] h-[13px]" />
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onDeleteArtist(artist); }}
+                    className={`p-[5px] rounded-[8px] ${isDark ? "bg-[rgba(255,255,255,0.06)] text-[#7070a0] hover:text-red-400 hover:bg-[rgba(239,68,68,0.15)]" : "bg-[rgba(0,0,0,0.04)] text-[#78716c] hover:text-red-500 hover:bg-[rgba(239,68,68,0.1)]"}`}>
+                    <Trash2 className="w-[13px] h-[13px]" />
+                  </button>
+                </div>
+                <div className="flex items-start gap-[14px]">
+                  <div className="rounded-full size-[56px] shrink-0 overflow-hidden" style={{ background: isDark ? "#1a1a26" : "#f0ebe2" }}>
+                    <img src={artist.photo} alt={artist.name} className="w-full h-full object-cover" />
+                  </div>
+                  <div className="flex-1 min-w-0 pr-[24px]">
+                    <p className={`text-[14px] font-semibold leading-[1.3] truncate ${heading}`}>{artist.name}</p>
+                    <div className="flex items-center gap-[5.25px] mt-[5.25px]">
+                      <div title={COUNTRY_NAMES[artist.countryCode] || artist.countryCode} className="rounded-[3.5px] overflow-hidden w-[24px] h-[16px] shrink-0 border border-[rgba(128,128,128,0.2)] cursor-default">
+                        <img src={artist.flag} alt={artist.countryCode} className="w-full h-full object-cover" />
+                      </div>
+                      <span className={`text-[10.5px] font-semibold tracking-[0.525px] ${muted}`}>{artist.countryCode}</span>
+                    </div>
+                    <div className="mt-[7px]"><TypeBadge type={artist.type} groupSize={artist.groupSize} isDark={isDark} artistName={artist.name} /></div>
+                  </div>
+                </div>
+                <div className={`flex items-center justify-between mt-[14px] pt-[10.5px] border-t ${divider}`}>
+                  <span className={`text-[10.5px] font-medium ${muted}`}>Since {artist.since}</span>
+                  <span className={`text-[10.5px] font-medium flex items-center gap-[4px] ${muted}`}>
+                    <Music className="w-[11px] h-[11px]" />
+                    {count} {count === 1 ? "album" : "albums"} · {sold} sold
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
 
 // ─── Albums View ──────────────────────────────────────────────────────────────
-
-function AlbumsView({
-  albums, artists, onSelect, onAdd, onEdit, onDeleteRequest,
-}: {
+interface AlbumsViewProps {
   albums: Album[];
-  artists: Artist[];
-  onSelect: (id: string) => void;
-  onAdd: () => void;
-  onEdit: (a: Album) => void;
-  onDeleteRequest: (a: Album) => void;
-}) {
+  onSelectAlbum: (id: string) => void;
+  onEditAlbum: (album: Album) => void;
+  onDeleteAlbum: (album: Album) => void;
+}
+function AlbumsView({ albums, onSelectAlbum, onEditAlbum, onDeleteAlbum }: AlbumsViewProps) {
+  const { isDark } = useTheme();
   const [search, setSearch] = useState("");
-  const [filterCert, setFilterCert] = useState<"all" | Certification>("all");
-  const [filterStream, setFilterStream] = useState<"all" | StreamingPlatform>("all");
-  const [sort, setSort] = useState<"title" | "releaseYear" | "albumsSold">("title");
-
-  const artistMap = useMemo(() => Object.fromEntries(artists.map(a => [a.id, a])), [artists]);
+  const [certFilter, setCertFilter] = useState("All");
+  const [streamFilter, setStreamFilter] = useState("All");
+  const [sort, setSort] = useState("title-az");
 
   const filtered = useMemo(() => {
-    let list = albums;
-    if (search.trim()) {
+    let arr = albums.filter((al) => {
       const q = search.toLowerCase();
-      list = list.filter(al => al.title.toLowerCase().includes(q) || artistMap[al.artistId]?.name.toLowerCase().includes(q));
-    }
-    if (filterCert !== "all") list = list.filter(al => al.certification === filterCert);
-    if (filterStream !== "all") list = list.filter(al => al.streaming.includes(filterStream as StreamingPlatform));
-    list = [...list].sort((a, b) => {
-      if (sort === "title") return a.title.localeCompare(b.title);
-      if (sort === "releaseYear") return b.releaseYear - a.releaseYear;
-      return b.albumsSold - a.albumsSold;
+      const matchSearch = !search || al.title.toLowerCase().includes(q) || al.artistName.toLowerCase().includes(q);
+      const matchCert = certFilter === "All" || (certFilter === "None" ? !al.cert : al.cert === certFilter);
+      const matchStream = streamFilter === "All" || al.streaming.includes(streamFilter as StreamingPlatform);
+      return matchSearch && matchCert && matchStream;
     });
-    return list;
-  }, [albums, search, filterCert, filterStream, sort, artistMap]);
+    if (sort === "title-az") arr = [...arr].sort((a, b) => a.title.localeCompare(b.title));
+    else if (sort === "year-new") arr = [...arr].sort((a, b) => b.year - a.year);
+    else if (sort === "year-old") arr = [...arr].sort((a, b) => a.year - b.year);
+    return arr;
+  }, [albums, search, certFilter, streamFilter, sort]);
+
+  const bg = isDark ? "bg-[#09090f]" : "bg-[#faf8f4]";
+  const heading = isDark ? "text-[#f2f2f8]" : "text-[#1c1917]";
+  const muted = isDark ? "text-[#7070a0]" : "text-[#78716c]";
+  const card = isDark ? "bg-[#13131c] hover:bg-[rgba(255,255,255,0.03)]" : "bg-white hover:bg-[rgba(0,0,0,0.01)]";
+  const selCls = `border rounded-[10.5px] px-[10.5px] py-[7px] text-[12.25px] font-medium focus:outline-none transition-colors ${inputCls(isDark)}`;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground" style={{ fontFamily: "'Playfair Display', serif" }}>Albums</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">{filtered.length} of {albums.length} albums</p>
+    <div className={`min-h-screen ${bg}`}>
+      <div className="max-w-[1120px] mx-auto px-[21px] py-[28px]">
+        <div className="flex items-center justify-between mb-[21px] gap-[14px] flex-wrap">
+          <div>
+            <h1 className={`text-[26.25px] leading-[31.5px] ${heading}`} style={{ fontFamily: "'Playfair Display',Georgia,serif", fontWeight: 700 }}>Albums</h1>
+            <p className={`text-[12.25px] font-medium mt-1 ${muted}`}>{filtered.length} of {albums.length} albums</p>
+          </div>
+          <div className="flex items-center gap-[10.5px] flex-wrap">
+            <div className="relative">
+              <Search className={`absolute left-[10.5px] top-1/2 -translate-y-1/2 w-[14px] h-[14px] ${muted}`} />
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search albums..."
+                className={`border rounded-[10.5px] pl-[35px] pr-[14px] py-[7px] text-[12.25px] w-[220px] focus:outline-none transition-colors ${inputCls(isDark)}`} />
+            </div>
+            <select value={certFilter} onChange={(e) => setCertFilter(e.target.value)} className={selCls}>
+              <option value="All">All Certifications</option>
+              <option value="None">Uncertified</option>
+              <option value="Gold">Gold</option>
+              <option value="Platinum">Platinum</option>
+              <option value="Diamond">Diamond</option>
+            </select>
+            <select value={streamFilter} onChange={(e) => setStreamFilter(e.target.value)} className={selCls}>
+              <option value="All">All Platforms</option>
+              <option value="SP">Spotify</option>
+              <option value="AM">Apple Music</option>
+              <option value="AZ">Amazon Music</option>
+            </select>
+            <select value={sort} onChange={(e) => setSort(e.target.value)} className={selCls}>
+              <option value="title-az">Title A→Z</option>
+              <option value="year-new">Year: Newest</option>
+              <option value="year-old">Year: Oldest</option>
+            </select>
+          </div>
         </div>
-        <button onClick={onAdd}
-          className="flex items-center gap-2 bg-primary text-primary-foreground rounded-xl px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors">
-          <Plus size={15} /> Add Album
-        </button>
-      </div>
 
-      {/* Toolbar */}
-      <div className="flex flex-wrap gap-3 mb-6">
-        <div className="relative flex-1 min-w-[200px]">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search albums or artists..."
-            className="w-full bg-secondary border border-border rounded-xl pl-8 pr-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary" />
-        </div>
-        <select value={filterCert} onChange={e => setFilterCert(e.target.value as "all" | Certification)}
-          className="bg-secondary border border-border rounded-xl px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
-          <option value="all">All Certifications</option>
-          <option value="none">None</option>
-          <option value="gold">Gold</option>
-          <option value="platinum">Platinum</option>
-          <option value="multi-platinum">Multi-Platinum</option>
-        </select>
-        <select value={filterStream} onChange={e => setFilterStream(e.target.value as "all" | StreamingPlatform)}
-          className="bg-secondary border border-border rounded-xl px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
-          <option value="all">All Platforms</option>
-          <option value="spotify">Spotify</option>
-          <option value="apple">Apple Music</option>
-          <option value="amazon">Amazon Music</option>
-        </select>
-        <select value={sort} onChange={e => setSort(e.target.value as "title" | "releaseYear" | "albumsSold")}
-          className="bg-secondary border border-border rounded-xl px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary">
-          <option value="title">Sort: Title</option>
-          <option value="releaseYear">Sort: Year (Newest)</option>
-          <option value="albumsSold">Sort: Best Selling</option>
-        </select>
-      </div>
-
-      {/* Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-        {filtered.map(album => {
-          const artist = artistMap[album.artistId];
-          return (
-            <div key={album.id}
-              className="group bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg hover:shadow-primary/5 transition-all cursor-pointer"
-              onClick={() => onSelect(album.id)}>
-              <div className="aspect-square bg-muted relative">
-                <img src={album.coverUrl} alt={album.title} className="w-full h-full object-cover" />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-2 gap-1">
-                  <button onClick={e => { e.stopPropagation(); onEdit(album); }}
-                    className="p-1.5 bg-white/10 backdrop-blur rounded-lg hover:bg-white/20 transition-colors">
-                    <Pencil size={12} className="text-white" />
-                  </button>
-                  <button onClick={e => { e.stopPropagation(); onDeleteRequest(album); }}
-                    className="p-1.5 bg-white/10 backdrop-blur rounded-lg hover:bg-destructive/80 transition-colors">
-                    <Trash2 size={12} className="text-white" />
-                  </button>
+        <div className="grid grid-cols-4 gap-[14px]">
+          {filtered.map((album) => (
+            <div key={album.id} className={`relative rounded-[14px] overflow-hidden transition-colors group ${card} ${isDark ? "border border-[rgba(255,255,255,0.05)]" : "border border-[rgba(0,0,0,0.06)]"}`}>
+              <button onClick={() => onSelectAlbum(album.id)} className="w-full text-left">
+                <div className="aspect-square overflow-hidden">
+                  <img src={album.cover} alt={album.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
                 </div>
-              </div>
-              <div className="p-3">
-                <h3 className="text-lg font-semibold text-foreground truncate leading-snug">{album.title}</h3>
-                <p className="text-lg text-muted-foreground truncate mt-0.5">{artist?.name}</p>
-                <div className="flex items-center justify-between mt-2">
-                  <span className="text-xs text-muted-foreground">{album.releaseYear}</span>
-                  <CertBadge cert={album.certification} />
+                <div className="p-[12px]">
+                  <p className={`text-[12.25px] font-semibold leading-[1.3] truncate ${isDark ? "text-[#f2f2f8]" : "text-[#1c1917]"}`}>{album.title}</p>
+                  <p className={`text-[10.5px] font-medium mt-[2px] truncate ${muted}`}>{album.artistName}</p>
+                  <div className="flex items-center gap-[5px] mt-[7px] flex-wrap">
+                    <span className={`text-[10px] ${muted}`}>{album.year}</span>
+                    {album.cert && <CertBadge cert={album.cert} isDark={isDark} />}
+                  </div>
+                  <div className="flex gap-[4px] mt-[5px] flex-wrap">
+                    {album.streaming.map((s) => <StreamingBadge key={s} platform={s} />)}
+                  </div>
                 </div>
-                <div className="mt-1.5">
-                  <StreamingIcons platforms={album.streaming} />
-                </div>
+              </button>
+              <div className="absolute top-[8px] right-[8px] flex gap-[4px] opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                <button onClick={(e) => { e.stopPropagation(); onEditAlbum(album); }}
+                  className={`p-[5px] rounded-[8px] ${isDark ? "bg-[rgba(9,9,15,0.7)] text-[#a8a8c0] hover:text-[#a855f7] hover:bg-[rgba(168,85,247,0.2)]" : "bg-[rgba(250,248,244,0.85)] text-[#78716c] hover:text-[#9333ea] hover:bg-[rgba(147,51,234,0.1)]"}`}>
+                  <Pencil className="w-[13px] h-[13px]" />
+                </button>
+                <button onClick={(e) => { e.stopPropagation(); onDeleteAlbum(album); }}
+                  className={`p-[5px] rounded-[8px] ${isDark ? "bg-[rgba(9,9,15,0.7)] text-[#a8a8c0] hover:text-red-400 hover:bg-[rgba(239,68,68,0.2)]" : "bg-[rgba(250,248,244,0.85)] text-[#78716c] hover:text-red-500 hover:bg-[rgba(239,68,68,0.1)]"}`}>
+                  <Trash2 className="w-[13px] h-[13px]" />
+                </button>
               </div>
             </div>
-          );
-        })}
-      </div>
-
-      {filtered.length === 0 && (
-        <div className="text-center py-16 text-muted-foreground">
-          <Disc3 size={36} className="mx-auto mb-3 opacity-40" />
-          <p>No albums found</p>
+          ))}
         </div>
-      )}
+      </div>
     </div>
   );
 }
 
 // ─── Artist Detail View ───────────────────────────────────────────────────────
-
-function ArtistDetailView({
-  artist, albums, onNavigateAlbum, onBack, onEdit, onDelete, onAddAlbum, onEditAlbum, onDeleteAlbum,
-}: {
+interface ArtistDetailViewProps {
   artist: Artist;
   albums: Album[];
-  onNavigateAlbum: (id: string) => void;
   onBack: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
+  onSelectAlbum: (id: string) => void;
   onAddAlbum: () => void;
-  onEditAlbum: (a: Album) => void;
-  onDeleteAlbum: (a: Album) => void;
-}) {
+  onEditAlbum: (album: Album) => void;
+  onDeleteAlbum: (album: Album) => void;
+  onEditArtist: () => void;
+  onDeleteArtist: () => void;
+}
+function ArtistDetailView({ artist, albums, onBack, onSelectAlbum, onAddAlbum, onEditAlbum, onDeleteAlbum, onEditArtist, onDeleteArtist }: ArtistDetailViewProps) {
+  const { isDark } = useTheme();
   const [albumsOpen, setAlbumsOpen] = useState(true);
+  const artistAlbums = albums.filter((a) => a.artistId === artist.id);
 
-  const sortedAlbums = useMemo(() => [...albums].sort((a, b) => a.releaseYear - b.releaseYear), [albums]);
+  const bg = isDark ? "bg-[#09090f]" : "bg-[#faf8f4]";
+  const card = isDark ? "bg-[#13131c] border-[rgba(255,255,255,0.08)]" : "bg-white border-[rgba(0,0,0,0.08)]";
+  const heading = isDark ? "text-[#f2f2f8]" : "text-[#1c1917]";
+  const muted = isDark ? "text-[#7070a0]" : "text-[#78716c]";
+  const divider = isDark ? "border-[rgba(255,255,255,0.04)]" : "border-[rgba(0,0,0,0.05)]";
+  const btnGhost = isDark ? "border-[rgba(255,255,255,0.08)] text-[#7070a0] hover:text-[#f2f2f8] hover:border-[rgba(255,255,255,0.16)]" : "border-[rgba(0,0,0,0.1)] text-[#78716c] hover:text-[#1c1917]";
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6">
-      <button onClick={onBack} className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors mb-6">
-        <ArrowLeft size={15} /> Back to Artists
-      </button>
+    <div className={`min-h-screen ${bg}`}>
+      <div className="max-w-[896px] mx-auto px-[21px] py-[21px]">
+        <button onClick={onBack} className={`flex items-center gap-[7px] text-[12.25px] font-medium hover:opacity-80 transition-opacity mb-[21px] ${muted}`}>
+          <ArrowLeft className="w-[15px] h-[15px]" />
+          Back to Artists
+        </button>
 
-      {/* Hero */}
-      <div className="bg-card border border-border rounded-2xl p-6 mb-6">
-        <div className="flex items-start gap-5">
-          <ArtistAvatar artist={artist} size="xl" />
-          <div className="flex-1 min-w-0">
-            <h1 className="text-3xl font-bold text-foreground mb-1" style={{ fontFamily: "'Playfair Display', serif" }}>
-              {artist.name}
-            </h1>
-            <div className="flex flex-wrap items-center gap-3 mt-2">
-              <CountryFlag countryCode={artist.countryCode} country={artist.country} />
-              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${artist.type === "group" ? "bg-violet-500/15 text-violet-400" : "bg-pink-500/15 text-pink-400"}`}>
-                {artist.type === "group" ? `Group · ${artist.memberCount} members` : "Solo Artist"}
-              </span>
-              <span className="text-xs text-muted-foreground bg-secondary px-2 py-0.5 rounded-full">
-                Active since {artist.activeSince}
-              </span>
-              <span className="text-xs text-muted-foreground bg-secondary px-2 py-0.5 rounded-full flex items-center gap-1">
-                <Disc3 size={11} /> {sortedAlbums.length} albums
-              </span>
+        <div className={`border rounded-[14px] p-[21.8px] ${card}`}>
+          <div className="flex items-start gap-[17.5px]">
+            <div className="rounded-full size-[168px] shrink-0 overflow-hidden" style={{ background: isDark ? "#1a1a26" : "#f0ebe2" }}>
+              <img src={artist.photo} alt={artist.name} className="w-full h-full object-cover" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h1 className={`text-[26.25px] leading-[31.5px] ${heading}`} style={{ fontFamily: "'Playfair Display',Georgia,serif", fontWeight: 700 }}>{artist.name}</h1>
+              <div className="flex items-center gap-[10.5px] mt-[7px] flex-wrap">
+                <div className="flex items-center gap-[5.25px]">
+                  <div className="rounded-[3.5px] overflow-hidden w-[35px] h-[21px] border border-[rgba(128,128,128,0.2)]">
+                    <img src={artist.flag} alt={artist.countryCode} className="w-full h-full object-cover" />
+                  </div>
+                  <span className={`text-[10.5px] font-semibold tracking-[0.525px] ${muted}`}>{COUNTRY_NAMES[artist.countryCode] || artist.countryCode}</span>
+                </div>
+                <TypeBadge type={artist.type} groupSize={artist.groupSize} isDark={isDark} artistName={artist.name} detailMode />
+                <span className={`inline-flex items-center px-[7px] py-[1.75px] rounded-full text-[10.5px] font-normal ${isDark ? "bg-[#1e1e2e] text-[#7070a0]" : "bg-[#f0ebe2] text-[#78716c]"}`}>
+                  Active since {artist.since}
+                </span>
+                <span className={`inline-flex items-center gap-[3.5px] px-[7px] py-[1.75px] rounded-full text-[10.5px] font-normal ${isDark ? "bg-[#1e1e2e] text-[#7070a0]" : "bg-[#f0ebe2] text-[#78716c]"}`}>
+                  <Music className="w-[11px] h-[11px]" /> {artistAlbums.length} {artistAlbums.length === 1 ? "album" : "albums"}
+                </span>
+                <span className={`inline-flex items-center px-[7px] py-[1.75px] rounded-full text-[10.5px] font-normal ${isDark ? "bg-[#1e1e2e] text-[#7070a0]" : "bg-[#f0ebe2] text-[#78716c]"}`}>
+                  {sumSold(artistAlbums)} sold
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-[7px] shrink-0">
+              <button onClick={onEditArtist} className={`flex items-center gap-[5.25px] px-[11.3px] py-[7.8px] rounded-[10.5px] border text-[10.5px] font-medium transition-colors ${btnGhost}`}>
+                <Pencil className="w-[12px] h-[12px]" />
+                Edit Artist
+              </button>
+              <button onClick={onDeleteArtist} className="flex items-center gap-[5.25px] px-[11.3px] py-[7.8px] rounded-[10.5px] border border-[rgba(239,68,68,0.3)] text-red-500 text-[10.5px] font-medium hover:bg-[rgba(239,68,68,0.1)] transition-colors">
+                <Trash2 className="w-[12px] h-[12px]" />
+                Delete Artist
+              </button>
             </div>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <button onClick={onEdit}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground border border-border rounded-lg px-3 py-2 hover:text-foreground hover:border-primary/50 transition-all">
-              <Pencil size={12} /> Edit Artist
+        </div>
+
+        <div className={`border rounded-[14px] mt-[21px] overflow-hidden ${card}`}>
+          <div className={`flex items-center justify-between px-[17.5px] py-[14.8px] border-b ${divider}`}>
+            <button onClick={() => setAlbumsOpen((v) => !v)} className={`flex items-center gap-[7px] text-[14px] font-semibold leading-[21px] ${heading}`}>
+              Albums {albumsOpen ? <ChevronUp className={`w-[16px] h-[16px] ${muted}`} /> : <ChevronDown className={`w-[16px] h-[16px] ${muted}`} />}
             </button>
-            <button onClick={onDelete}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground border border-border rounded-lg px-3 py-2 hover:text-destructive hover:border-destructive/50 transition-all">
-              <Trash2 size={12} /> Delete Artist
+            <button onClick={onAddAlbum} className={`flex items-center gap-[5.25px] px-[10.5px] py-[5.25px] rounded-[10.5px] text-[10.5px] font-medium transition-colors ${isDark ? "bg-[rgba(168,85,247,0.2)] text-[#a855f7] hover:bg-[rgba(168,85,247,0.3)]" : "bg-[rgba(147,51,234,0.12)] text-[#9333ea] hover:bg-[rgba(147,51,234,0.2)]"}`}>
+              <Plus className="w-[12px] h-[12px]" />
+              Add Album
             </button>
           </div>
-        </div>
-      </div>
 
-      {/* Albums Section */}
-      <div className="bg-card border border-border rounded-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border/50">
-          <button onClick={() => setAlbumsOpen(o => !o)} className="flex items-center gap-2 font-semibold text-foreground hover:text-primary transition-colors">
-            Albums
-            {albumsOpen ? <ChevronUp size={16} className="text-muted-foreground" /> : <ChevronDown size={16} className="text-muted-foreground" />}
-          </button>
-          <button onClick={onAddAlbum}
-            className="flex items-center gap-1.5 text-xs bg-primary/20 text-primary rounded-lg px-3 py-1.5 hover:bg-primary/30 transition-colors font-medium">
-            <Plus size={12} /> Add Album
-          </button>
-        </div>
-
-        {albumsOpen && (
-          <div>
-            {sortedAlbums.length === 0 ? (
-              <div className="text-center py-10 text-muted-foreground text-sm">No albums yet</div>
-            ) : (
-              sortedAlbums.map((album, i) => (
-                <div key={album.id}
-                  className={`flex items-center gap-4 px-5 py-4 hover:bg-secondary/50 transition-colors ${i < sortedAlbums.length - 1 ? "border-b border-border/30" : ""}`}>
-                  <button className="flex items-center gap-4 flex-1 min-w-0 text-left" onClick={() => onNavigateAlbum(album.id)}>
-                    <CoverImage url={album.coverUrl} title={album.title} size="md" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-foreground truncate hover:text-primary transition-colors">{album.title}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">{album.label} · {album.releaseYear}</p>
-                      <div className="flex items-center flex-wrap gap-2 mt-1.5">
-                        <span className="text-xs text-muted-foreground">{formatSold(album.albumsSold)} sold</span>
-                        <span className="text-xs text-muted-foreground">·</span>
-                        <span className="text-xs text-muted-foreground">{album.trackCount} tracks</span>
-                        <CertBadge cert={album.certification} />
-                        <StreamingIcons platforms={album.streaming} />
-                      </div>
-                    </div>
-                  </button>
-                  <div className="flex items-center gap-1.5 flex-shrink-0">
-                    <button onClick={() => onEditAlbum(album)}
-                      className="p-1.5 text-muted-foreground hover:text-foreground border border-border/50 rounded-lg hover:border-primary/50 transition-all">
-                      <Pencil size={12} />
-                    </button>
-                    <button onClick={() => onDeleteAlbum(album)}
-                      className="p-1.5 text-muted-foreground hover:text-destructive border border-border/50 rounded-lg hover:border-destructive/50 transition-all">
-                      <Trash2 size={12} />
-                    </button>
+          {albumsOpen && artistAlbums.map((album, i) => (
+            <div key={album.id} className={`flex items-center gap-[14px] px-[17.5px] py-[14px] ${i < artistAlbums.length - 1 ? `border-b ${divider}` : ""}`}>
+              <button onClick={() => onSelectAlbum(album.id)} className="flex items-center gap-[14px] flex-1 min-w-0 text-left hover:opacity-80 transition-opacity">
+                <div className="rounded-[10.5px] size-[56px] shrink-0 overflow-hidden" style={{ background: isDark ? "#1a1a26" : "#f0ebe2" }}>
+                  <img src={album.cover} alt={album.title} className="w-full h-full object-cover" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className={`text-[12.25px] font-semibold leading-[17.5px] truncate ${heading}`}>{album.title}</p>
+                  <p className={`text-[10.5px] font-medium mt-[1.75px] ${muted}`}>{album.label} · {album.year}</p>
+                  <div className="flex items-center gap-[7px] mt-[5.25px] flex-wrap">
+                    <span className={`text-[10.5px] font-medium ${muted}`}>{album.sold} sold</span>
+                    <span className={`text-[10.5px] ${muted}`}>·</span>
+                    <span className={`text-[10.5px] font-medium ${muted}`}>{album.tracks} tracks</span>
+                    {album.cert && <CertBadge cert={album.cert} isDark={isDark} />}
+                    <div className="flex gap-[5.25px]">{album.streaming.map((s) => <StreamingBadge key={s} platform={s} />)}</div>
                   </div>
                 </div>
-              ))
-            )}
-          </div>
-        )}
+              </button>
+              <div className="flex items-center gap-[5.25px] shrink-0">
+                <button onClick={(e) => { e.stopPropagation(); onEditAlbum(album); }} className={`p-[6.05px] rounded-[10.5px] border transition-colors ${isDark ? "border-[rgba(255,255,255,0.04)] text-[#7070a0] hover:text-[#a855f7] hover:border-[rgba(168,85,247,0.3)]" : "border-[rgba(0,0,0,0.06)] text-[#78716c] hover:text-[#9333ea]"}`}>
+                  <Pencil className="w-[12px] h-[12px]" />
+                </button>
+                <button onClick={(e) => { e.stopPropagation(); onDeleteAlbum(album); }} className={`p-[6.05px] rounded-[10.5px] border transition-colors ${isDark ? "border-[rgba(255,255,255,0.04)] text-[#7070a0] hover:text-red-400" : "border-[rgba(0,0,0,0.06)] text-[#78716c] hover:text-red-500"}`}>
+                  <Trash2 className="w-[12px] h-[12px]" />
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {albumsOpen && artistAlbums.length === 0 && (
+            <div className={`py-[35px] text-center text-[12.25px] ${muted}`}>No albums yet. Add one to get started.</div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
 // ─── Album Detail View ────────────────────────────────────────────────────────
-
-function AlbumDetailView({
-  album, artist, onNavigateArtist, onBack, onEdit, onDeleteRequest,
-}: {
+interface AlbumDetailViewProps {
   album: Album;
-  artist: Artist | null;
-  onNavigateArtist: (id: string) => void;
   onBack: () => void;
   onEdit: () => void;
-  onDeleteRequest: () => void;
-}) {
+  onDelete: () => void;
+  onGoToArtist: () => void;
+}
+function AlbumDetailView({ album, onBack, onEdit, onDelete, onGoToArtist }: AlbumDetailViewProps) {
+  const { isDark } = useTheme();
+  const bg = isDark ? "bg-[#09090f]" : "bg-[#faf8f4]";
+  const heading = isDark ? "text-[#f2f2f8]" : "text-[#1c1917]";
+  const muted = isDark ? "text-[#7070a0]" : "text-[#78716c]";
+  const metaCard = isDark ? "bg-[rgba(19,19,28,0.7)] border-[rgba(255,255,255,0.04)]" : "bg-[rgba(255,255,255,0.7)] border-[rgba(0,0,0,0.05)]";
+  const accent = isDark ? "text-[#a855f7]" : "text-[#9333ea]";
+
   return (
-    <div className="min-h-screen relative">
-      {/* Blurred background */}
-      <div className="absolute inset-0 overflow-hidden">
-        <img src={album.coverUrl} alt="" className="w-full h-full object-cover scale-110 blur-3xl opacity-20" aria-hidden />
-        <div className="absolute inset-0 bg-background/70" />
+    <div className={`relative min-h-screen ${bg}`}>
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <img src={album.cover} alt="" className="absolute w-full h-full object-cover opacity-20 blur-[70px] scale-110" />
+        <div className={`absolute inset-0 ${isDark ? "bg-[rgba(9,9,15,0.7)]" : "bg-[rgba(250,248,244,0.75)]"}`} />
       </div>
-
-      <div className="relative max-w-4xl mx-auto px-4 sm:px-6 py-6">
-        <button onClick={onBack} className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors mb-8">
-          <ArrowLeft size={15} /> Back
+      <div className="relative max-w-[784px] mx-auto px-[21px] pt-[21px] pb-[42px]">
+        <button onClick={onBack} className={`flex items-center gap-[7px] text-[12.25px] font-medium hover:opacity-80 transition-opacity ${muted}`}>
+          <ArrowLeft className="w-[15px] h-[15px]" />
+          Back
         </button>
-
-        <div className="flex flex-col sm:flex-row gap-8 items-start">
-          {/* Cover */}
-          <div className="flex-shrink-0 w-full sm:w-64">
-            <div className="w-full sm:w-64 h-64 rounded-2xl overflow-hidden shadow-2xl shadow-black/50 bg-muted">
-              <img src={album.coverUrl} alt={album.title} className="w-full h-full object-cover" />
-            </div>
+        <div className="flex items-start gap-[28px] mt-[28px]">
+          <div className="rounded-[14px] size-[224px] shrink-0 overflow-hidden shadow-[0px_25px_50px_-12px_rgba(0,0,0,0.5)]" style={{ background: isDark ? "#1a1a26" : "#f0ebe2" }}>
+            <img src={album.cover} alt={album.title} className="w-full h-full object-cover" />
           </div>
-
-          {/* Details */}
           <div className="flex-1 min-w-0">
-            <p className="text-lg font-semibold uppercase tracking-widest text-primary mb-2">Album</p>
-            <h1 className="text-3xl sm:text-4xl font-bold text-foreground leading-tight mb-3" style={{ fontFamily: "'Playfair Display', serif" }}>
-              {album.title}
-            </h1>
-
-            {artist && (
-              <button onClick={() => onNavigateArtist(artist.id)}
-                className="flex items-center gap-2 mb-5 group">
-                <ArtistAvatar artist={artist} size="md" />
-                <span className="text-lg font-medium text-foreground group-hover:text-primary transition-colors">{artist.name}</span>
-              </button>
-            )}
-
-            <div className="grid grid-cols-2 gap-3 mb-5">
-              <div className="bg-card/70 backdrop-blur border border-border/50 rounded-xl p-3">
-                <p className="text-xs text-muted-foreground mb-1">Record Label</p>
-                <p className="text-sm font-medium text-foreground">{album.label || "—"}</p>
+            <p className={`text-[15.75px] font-semibold tracking-[1.575px] uppercase ${accent}`}>Album</p>
+            <h1 className={`text-[31.5px] leading-[39.375px] mt-[7px] ${heading}`} style={{ fontFamily: "'Playfair Display',Georgia,serif", fontWeight: 700 }}>{album.title}</h1>
+            <button onClick={onGoToArtist} className="flex items-center gap-[7px] mt-[10.5px] group/artist hover:opacity-80 transition-opacity">
+              <div className="rounded-full size-[42px] shrink-0 overflow-hidden" style={{ background: isDark ? "#1a1a26" : "#f0ebe2" }}>
+                <img src={album.artistPhoto} alt={album.artistName} className="w-full h-full object-cover" />
               </div>
-              <div className="bg-card/70 backdrop-blur border border-border/50 rounded-xl p-3">
-                <p className="text-xs text-muted-foreground mb-1">Release Year</p>
-                <p className="text-sm font-medium text-foreground">{album.releaseYear}</p>
-              </div>
-              <div className="bg-card/70 backdrop-blur border border-border/50 rounded-xl p-3">
-                <p className="text-xs text-muted-foreground mb-1">Albums Sold</p>
-                <p className="text-sm font-medium text-foreground">{formatSold(album.albumsSold)}</p>
-              </div>
-              <div className="bg-card/70 backdrop-blur border border-border/50 rounded-xl p-3">
-                <p className="text-xs text-muted-foreground mb-1">Tracks / Singles</p>
-                <p className="text-sm font-medium text-foreground">{album.trackCount} / {album.singleCount}</p>
-              </div>
+              <span className={`text-[15.75px] font-medium group-hover/artist:underline underline-offset-2 ${heading}`}>{album.artistName}</span>
+            </button>
+            <div className="grid grid-cols-2 gap-[10.5px] mt-[17.5px]">
+              {[
+                { label: "Record Label", value: album.label },
+                { label: "Release Year", value: String(album.year) },
+                { label: "Albums Sold", value: album.sold },
+                { label: "Tracks / Singles", value: `${album.tracks} / ${album.singles}` },
+              ].map(({ label, value }) => (
+                <div key={label} className={`border rounded-[14.5px] p-[11.3px] ${metaCard}`}>
+                  <p className={`text-[10.5px] font-normal leading-[14px] ${muted}`}>{label}</p>
+                  <p className={`text-[12.25px] font-medium leading-[17.5px] mt-[3.5px] ${heading}`}>{value}</p>
+                </div>
+              ))}
             </div>
-
-            <div className="flex flex-wrap items-center gap-3 mb-6">
-              <CertBadge cert={album.certification} />
-              <StreamingIcons platforms={album.streaming} />
+            <div className="flex items-center gap-[10.5px] mt-[17.5px]">
+              {album.cert && <CertBadge cert={album.cert} isDark={isDark} />}
+              <div className="flex gap-[5.25px]">{album.streaming.map((s) => <StreamingBadge key={s} platform={s} />)}</div>
             </div>
-
-            <div className="flex gap-3">
-              <button onClick={onEdit}
-                className="flex items-center gap-2 bg-secondary text-secondary-foreground rounded-xl px-4 py-2 text-sm font-medium hover:bg-secondary/80 transition-colors">
-                <Pencil size={14} /> Edit Album
+            <div className="flex items-center gap-[10.5px] mt-[21px]">
+              <button onClick={onEdit} className={`flex items-center gap-[7px] px-[14px] py-[7px] rounded-[14.5px] text-[12.25px] font-medium transition-colors ${isDark ? "bg-[#1e1e2e] text-[#c4c4d4] hover:bg-[#252535]" : "bg-[#f0ebe2] text-[#44403c] hover:bg-[#e5dfd6]"}`}>
+                <Pencil className="w-[14px] h-[14px]" />
+                Edit Album
               </button>
-              <button onClick={onDeleteRequest}
-                className="flex items-center gap-2 bg-destructive/15 text-destructive rounded-xl px-4 py-2 text-sm font-medium hover:bg-destructive/25 transition-colors">
-                <Trash2 size={14} /> Delete
+              <button onClick={onDelete} className="flex items-center gap-[7px] px-[14px] py-[7px] bg-[rgba(239,68,68,0.15)] rounded-[14.5px] text-red-500 text-[12.25px] font-medium hover:bg-[rgba(239,68,68,0.25)] transition-colors">
+                <Trash2 className="w-[14px] h-[14px]" />
+                Delete
               </button>
             </div>
           </div>
@@ -1108,7 +700,263 @@ function AlbumDetailView({
   );
 }
 
-// ─── Catalog Context ──────────────────────────────────────────────────────────
+// ─── Add Artist Modal ─────────────────────────────────────────────────────────
+interface AddArtistModalProps { onClose: () => void; onAdd: (artist: Artist) => void; }
+function AddArtistModal({ onClose, onAdd }: AddArtistModalProps) {
+  const { isDark } = useTheme();
+  const [name, setName] = useState("");
+  const [countryCode, setCountryCode] = useState("US");
+  const [type, setType] = useState<ArtistType>("Solo");
+  const [groupSize, setGroupSize] = useState("4");
+  const [since, setSince] = useState(String(new Date().getFullYear()));
+
+  const handleAdd = () => {
+    if (!name.trim() || !since.trim()) return;
+    onAdd({
+      id: name.toLowerCase().replace(/\s+/g, "-") + "-" + Date.now(),
+      name: name.trim(),
+      photo: PLACEHOLDER_PHOTO,
+      flag: FLAG_MAP[countryCode] || PLACEHOLDER_PHOTO,
+      countryCode,
+      type,
+      groupSize: type === "Group" ? parseInt(groupSize) || undefined : undefined,
+      since: parseInt(since) || new Date().getFullYear(),
+    });
+    onClose();
+  };
+
+  return <ArtistFormModal title="Add Artist" isDark={isDark} name={name} setName={setName} countryCode={countryCode} setCountryCode={setCountryCode} type={type} setType={setType} groupSize={groupSize} setGroupSize={setGroupSize} since={since} setSince={setSince} onClose={onClose} onSubmit={handleAdd} submitLabel="Add Artist" />;
+}
+
+// ─── Edit Artist Modal ────────────────────────────────────────────────────────
+interface EditArtistModalProps { artist: Artist; onClose: () => void; onSave: (updated: Artist) => void; }
+function EditArtistModal({ artist, onClose, onSave }: EditArtistModalProps) {
+  const { isDark } = useTheme();
+  const [name, setName] = useState(artist.name);
+  const [countryCode, setCountryCode] = useState(artist.countryCode);
+  const [type, setType] = useState<ArtistType>(artist.type);
+  const [groupSize, setGroupSize] = useState(String(artist.groupSize || 4));
+  const [since, setSince] = useState(String(artist.since));
+
+  const handleSave = () => {
+    if (!name.trim() || !since.trim()) return;
+    onSave({ ...artist, name: name.trim(), flag: FLAG_MAP[countryCode] || artist.flag, countryCode, type, groupSize: type === "Group" ? parseInt(groupSize) || undefined : undefined, since: parseInt(since) || artist.since });
+    onClose();
+  };
+
+  return <ArtistFormModal title="Edit Artist" isDark={isDark} name={name} setName={setName} countryCode={countryCode} setCountryCode={setCountryCode} type={type} setType={setType} groupSize={groupSize} setGroupSize={setGroupSize} since={since} setSince={setSince} onClose={onClose} onSubmit={handleSave} submitLabel="Save Changes" />;
+}
+
+// Shared Artist form component
+interface ArtistFormModalProps {
+  title: string; isDark: boolean;
+  name: string; setName: (v: string) => void;
+  countryCode: string; setCountryCode: (v: string) => void;
+  type: ArtistType; setType: (v: ArtistType) => void;
+  groupSize: string; setGroupSize: (v: string) => void;
+  since: string; setSince: (v: string) => void;
+  onClose: () => void; onSubmit: () => void; submitLabel: string;
+}
+function ArtistFormModal({ title, isDark, name, setName, countryCode, setCountryCode, type, setType, groupSize, setGroupSize, since, setSince, onClose, onSubmit, submitLabel }: ArtistFormModalProps) {
+  const card = isDark ? "bg-[#13131c] border-[rgba(255,255,255,0.08)]" : "bg-white border-[rgba(0,0,0,0.1)]";
+  const heading = isDark ? "text-[#f2f2f8]" : "text-[#1c1917]";
+  const labelCls = `block text-[12.25px] font-medium mb-[5.25px] ${heading}`;
+  const inp = `w-full border rounded-[7px] px-[10.5px] py-[8.75px] text-[12.25px] focus:outline-none transition-colors ${inputCls(isDark)}`;
+  const previewFlag = FLAG_MAP[countryCode];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-[rgba(0,0,0,0.55)]" onClick={onClose} />
+      <div className={`relative border rounded-[14px] w-[420px] p-[21px] shadow-[0px_25px_50px_-12px_rgba(0,0,0,0.8)] ${card}`}>
+        <div className="flex items-center justify-between mb-[17.5px]">
+          <h2 className={`text-[17.5px] font-semibold ${heading}`}>{title}</h2>
+          <button onClick={onClose} className={`${isDark ? "text-[#7070a0] hover:text-[#f2f2f8]" : "text-[#78716c] hover:text-[#1c1917]"} transition-colors`}><X className="w-[17.5px] h-[17.5px]" /></button>
+        </div>
+        <div className="space-y-[14px]">
+          <div>
+            <label className={labelCls}>Artist Name <span className={isDark ? "text-[#a855f7]" : "text-[#9333ea]"}>*</span></label>
+            <input value={name} onChange={(e) => setName(e.target.value)} className={inp} />
+          </div>
+          <div>
+            <label className={labelCls}>Country</label>
+            <div className="flex items-center gap-[10px]">
+              <select value={countryCode} onChange={(e) => setCountryCode(e.target.value)} className={`${inp} flex-1`}>
+                {Object.keys(COUNTRY_NAMES).sort((a, b) => COUNTRY_NAMES[a].localeCompare(COUNTRY_NAMES[b])).map((c) => (
+                  <option key={c} value={c}>{COUNTRY_NAMES[c]}</option>
+                ))}
+              </select>
+              {previewFlag && (
+                <div className="rounded-[4px] overflow-hidden w-[36px] h-[24px] shrink-0 border border-[rgba(128,128,128,0.2)]">
+                  <img src={previewFlag} alt={countryCode} className="w-full h-full object-cover" />
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex gap-[10.5px]">
+            <div className="flex-1">
+              <label className={labelCls}>Type</label>
+              <select value={type} onChange={(e) => setType(e.target.value as ArtistType)} className={inp}>
+                <option value="Solo">Solo</option>
+                <option value="Group">Group</option>
+              </select>
+            </div>
+            {type === "Group" && (
+              <div className="w-[90px]">
+                <label className={labelCls}>Members</label>
+                <input value={groupSize} onChange={(e) => setGroupSize(e.target.value)} className={inp} type="number" min="2" />
+              </div>
+            )}
+            <div className="w-[100px]">
+              <label className={labelCls}>Active Since <span className={isDark ? "text-[#a855f7]" : "text-[#9333ea]"}>*</span></label>
+              <input value={since} onChange={(e) => setSince(e.target.value)} className={inp} />
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-[10.5px] mt-[21px]">
+          <button onClick={onClose} className={`flex-1 py-[10.5px] rounded-[10.5px] border text-[12.25px] font-medium transition-colors ${isDark ? "border-[rgba(255,255,255,0.08)] text-[#7070a0] hover:text-[#f2f2f8]" : "border-[rgba(0,0,0,0.1)] text-[#78716c] hover:text-[#1c1917]"}`}>Cancel</button>
+          <button onClick={onSubmit} disabled={!name.trim() || !since.trim()} className="flex-1 py-[10.5px] rounded-[10.5px] text-white text-[12.25px] font-medium disabled:opacity-40 transition-opacity" style={{ background: "linear-gradient(135deg,rgb(142,81,255) 0%,rgb(246,51,154) 100%)" }}>
+            {submitLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Add Album Modal ──────────────────────────────────────────────────────────
+interface AddAlbumModalProps {
+  artistId: string; artistName: string; artistPhoto: string;
+  onClose: () => void; onAdd: (album: Album) => void;
+}
+function AddAlbumModal({ artistId, artistName, artistPhoto, onClose, onAdd }: AddAlbumModalProps) {
+  const { isDark } = useTheme();
+  const blank: Omit<Album, "id" | "artistId" | "artistName" | "artistPhoto"> = {
+    title: "", label: "", year: new Date().getFullYear(), sold: "", tracks: 10, singles: 2, cert: null, streaming: ["SP"], cover: PLACEHOLDER_COVER,
+  };
+  const handleAdd = (data: typeof blank) => {
+    onAdd({ id: data.title.toLowerCase().replace(/\s+/g, "-") + "-" + Date.now(), artistId, artistName, artistPhoto, ...data });
+    onClose();
+  };
+  return <AlbumFormModal title="Add Album" isDark={isDark} initial={blank} artistName={artistName} onClose={onClose} onSubmit={handleAdd} submitLabel="Add Album" />;
+}
+
+// ─── Edit Album Modal ─────────────────────────────────────────────────────────
+interface EditAlbumModalProps {
+  album: Album; onClose: () => void; onSave: (updated: Album) => void;
+}
+function EditAlbumModal({ album, onClose, onSave }: EditAlbumModalProps) {
+  const { isDark } = useTheme();
+  const initial = { title: album.title, label: album.label, year: album.year, sold: album.sold, tracks: album.tracks, singles: album.singles, cert: album.cert, streaming: album.streaming, cover: album.cover };
+  const handleSave = (data: typeof initial) => {
+    onSave({ ...album, ...data });
+    onClose();
+  };
+  return <AlbumFormModal title="Edit Album" isDark={isDark} initial={initial} artistName={album.artistName} onClose={onClose} onSubmit={handleSave} submitLabel="Save Changes" />;
+}
+
+// Shared Album form
+type AlbumFormData = { title: string; label: string; year: number; sold: string; tracks: number; singles: number; cert: Cert; streaming: StreamingPlatform[]; cover: string; };
+interface AlbumFormModalProps {
+  title: string; isDark: boolean; initial: AlbumFormData; artistName: string;
+  onClose: () => void; onSubmit: (data: AlbumFormData) => void; submitLabel: string;
+}
+function AlbumFormModal({ title, isDark, initial, artistName, onClose, onSubmit, submitLabel }: AlbumFormModalProps) {
+  const [f, setF] = useState(initial);
+  const [coverUrl, setCoverUrl] = useState("");
+  const [coverPreviewOk, setCoverPreviewOk] = useState(false);
+  const card = isDark ? "bg-[#13131c] border-[rgba(255,255,255,0.08)]" : "bg-white border-[rgba(0,0,0,0.1)]";
+  const heading = isDark ? "text-[#f2f2f8]" : "text-[#1c1917]";
+  const muted = isDark ? "text-[#7070a0]" : "text-[#78716c]";
+  const labelCls = `block text-[12.25px] font-medium mb-[5.25px] ${heading}`;
+  const inp = `w-full border rounded-[7px] px-[10.5px] py-[8.75px] text-[12.25px] focus:outline-none transition-colors ${inputCls(isDark)}`;
+  const accent = isDark ? "#a855f7" : "#9333ea";
+
+  const toggleStream = (p: StreamingPlatform) => setF((prev) => ({ ...prev, streaming: prev.streaming.includes(p) ? prev.streaming.filter((s) => s !== p) : [...prev.streaming, p] }));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto py-[21px]">
+      <div className="absolute inset-0 bg-[rgba(0,0,0,0.55)]" onClick={onClose} />
+      <div className={`relative border rounded-[14px] w-[460px] p-[21px] shadow-[0px_25px_50px_-12px_rgba(0,0,0,0.8)] ${card}`}>
+        <div className="flex items-center justify-between mb-[14px]">
+          <h2 className={`text-[17.5px] font-semibold ${heading}`}>{title}</h2>
+          <button onClick={onClose} className={`${muted} hover:${isDark ? "text-[#f2f2f8]" : "text-[#1c1917]"} transition-colors`}><X className="w-[17.5px] h-[17.5px]" /></button>
+        </div>
+        <p className={`text-[12.25px] mb-[14px] ${muted}`}>For <span className={heading + " font-medium"}>{artistName}</span></p>
+        <div className="space-y-[12px]">
+          <div>
+            <label className={labelCls}>Album Title <span style={{ color: accent }}>*</span></label>
+            <input value={f.title} onChange={(e) => setF((p) => ({ ...p, title: e.target.value }))} className={inp} />
+          </div>
+          <div>
+            <label className={labelCls}>Cover Image URL</label>
+            <input value={coverUrl} onChange={(e) => { setCoverUrl(e.target.value); setCoverPreviewOk(false); }} placeholder="https://images.unsplash.com/..." className={inp} />
+            {coverUrl && (
+              <div className="mt-[7px] w-[56px] h-[56px] rounded-[7px] overflow-hidden border border-[rgba(128,128,128,0.2)]">
+                <img src={coverUrl} alt="" className="w-full h-full object-cover" onLoad={() => setCoverPreviewOk(true)} onError={() => setCoverPreviewOk(false)} style={{ display: coverPreviewOk ? "block" : "none" }} />
+              </div>
+            )}
+          </div>
+          <div className="flex gap-[10.5px]">
+            <div className="flex-1">
+              <label className={labelCls}>Record Label</label>
+              <input value={f.label} onChange={(e) => setF((p) => ({ ...p, label: e.target.value }))} className={inp} />
+            </div>
+            <div className="w-[90px]">
+              <label className={labelCls}>Year <span style={{ color: accent }}>*</span></label>
+              <input value={f.year} onChange={(e) => setF((p) => ({ ...p, year: parseInt(e.target.value) || p.year }))} className={inp} />
+            </div>
+          </div>
+          <div className="flex gap-[10.5px]">
+            <div className="flex-1">
+              <label className={labelCls}>Tracks</label>
+              <input value={f.tracks} type="number" onChange={(e) => setF((p) => ({ ...p, tracks: parseInt(e.target.value) || 0 }))} className={inp} />
+            </div>
+            <div className="flex-1">
+              <label className={labelCls}>Singles</label>
+              <input value={f.singles} type="number" onChange={(e) => setF((p) => ({ ...p, singles: parseInt(e.target.value) || 0 }))} className={inp} />
+            </div>
+            <div className="flex-1">
+              <label className={labelCls}>Albums Sold</label>
+              <input value={f.sold} onChange={(e) => setF((p) => ({ ...p, sold: e.target.value }))} placeholder="e.g. 250K" className={inp} />
+            </div>
+          </div>
+          <div>
+            <label className={labelCls}>Certification</label>
+            <select value={f.cert || "None"} onChange={(e) => setF((p) => ({ ...p, cert: e.target.value === "None" ? null : (e.target.value as Cert) }))} className={inp}>
+              <option value="None">None</option>
+              <option value="Gold">Gold</option>
+              <option value="Platinum">Platinum</option>
+              <option value="Diamond">Diamond</option>
+            </select>
+          </div>
+          <div>
+            <label className={labelCls}>Streaming Platforms</label>
+            <div className="flex gap-[7px]">
+              {(["SP", "AM", "AZ"] as StreamingPlatform[]).map((p) => {
+                const active = f.streaming.includes(p);
+                const colors: Record<string, string> = { SP: active ? "bg-[rgba(29,185,84,0.2)] text-[#1db954] border-[rgba(29,185,84,0.3)]" : "", AM: active ? "bg-[rgba(252,60,68,0.2)] text-[#fc3c44] border-[rgba(252,60,68,0.3)]" : "", AZ: active ? "bg-[rgba(0,168,225,0.2)] text-[#00a8e1] border-[rgba(0,168,225,0.3)]" : "" };
+                return (
+                  <button key={p} onClick={() => toggleStream(p)} className={`px-[14px] py-[7px] rounded-[7px] text-[12.25px] font-bold border transition-colors ${active ? colors[p] : (isDark ? "border-[rgba(255,255,255,0.08)] text-[#7070a0]" : "border-[rgba(0,0,0,0.1)] text-[#78716c]")}`}>
+                    {p === "SP" ? "Spotify" : p === "AM" ? "Apple Music" : "Amazon"}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-[10.5px] mt-[21px]">
+          <button onClick={onClose} className={`flex-1 py-[10.5px] rounded-[10.5px] border text-[12.25px] font-medium transition-colors ${isDark ? "border-[rgba(255,255,255,0.08)] text-[#7070a0] hover:text-[#f2f2f8]" : "border-[rgba(0,0,0,0.1)] text-[#78716c] hover:text-[#1c1917]"}`}>Cancel</button>
+          <button onClick={() => onSubmit({ ...f, cover: coverUrl.trim() || f.cover })} disabled={!f.title.trim()} className="flex-1 py-[10.5px] rounded-[10.5px] text-white text-[12.25px] font-medium disabled:opacity-40 transition-opacity" style={{ background: "linear-gradient(135deg,rgb(142,81,255) 0%,rgb(246,51,154) 100%)" }}>
+            {submitLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ─── Catalog Context (API-backed) ─────────────────────────────────────────────
 
 interface CatalogContextValue {
   artists: Artist[];
@@ -1136,16 +984,20 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const nav = useNavigate();
 
-  // Modal state
-  const [artistFormOpen, setArtistFormOpen] = useState(false);
-  const [editingArtist, setEditingArtist] = useState<Artist | undefined>();
-  const [albumFormOpen, setAlbumFormOpen] = useState(false);
-  const [editingAlbum, setEditingAlbum] = useState<Album | undefined>();
-  const [albumFormDefaultArtist, setAlbumFormDefaultArtist] = useState<string | undefined>();
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deletingAlbum, setDeletingAlbum] = useState<Album | null>(null);
-  const [deleteArtistOpen, setDeleteArtistOpen] = useState(false);
-  const [deletingArtist, setDeletingArtist] = useState<Artist | null>(null);
+  const [addArtistOpen, setAddArtistOpen] = useState(false);
+  const [editArtist, setEditArtist] = useState<Artist | null>(null);
+  const [deleteArtist, setDeleteArtist] = useState<Artist | null>(null);
+  const [addAlbumArtistId, setAddAlbumArtistId] = useState<string | null>(null);
+  const [editAlbum, setEditAlbum] = useState<Album | null>(null);
+  const [deleteAlbum, setDeleteAlbum] = useState<Album | null>(null);
+
+  const [isDark, setIsDark] = useState(() => {
+    const saved = localStorage.getItem("mmc-theme");
+    return saved ? saved === "dark" : true;
+  });
+  useEffect(() => {
+    localStorage.setItem("mmc-theme", isDark ? "dark" : "light");
+  }, [isDark]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1153,13 +1005,13 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       try {
         setLoading(true);
         setLoadError(null);
-        const [nextArtists, nextAlbums] = await Promise.all([
+        const [rawArtists, rawAlbums] = await Promise.all([
           catalogApi.getArtists(),
           catalogApi.getAlbums(),
         ]);
         if (cancelled) return;
-        setArtists(nextArtists);
-        setAlbums(nextAlbums);
+        setArtists(rawArtists.map(resolveArtist));
+        setAlbums(rawAlbums.map(resolveAlbum));
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : "Failed to load catalog";
@@ -1172,154 +1024,194 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
-  async function handleSaveArtist(data: Omit<Artist, "id">) {
+  function openAddArtist() { setAddArtistOpen(true); }
+  function openEditArtist(a: Artist) { setEditArtist(a); }
+  function openDeleteArtist(a: Artist) { setDeleteArtist(a); }
+  function openAddAlbum(defaultArtistId?: string) {
+    if (defaultArtistId) setAddAlbumArtistId(defaultArtistId);
+  }
+  function openEditAlbum(al: Album) { setEditAlbum(al); }
+  function openDeleteAlbum(al: Album) { setDeleteAlbum(al); }
+
+  async function handleAddArtist(artist: Artist) {
     try {
-      if (editingArtist) {
-        const updated = await catalogApi.updateArtist(editingArtist.id, data);
-        setArtists((as) => as.map((a) => (a.id === updated.id ? updated : a)));
-        toast.success(`${data.name} updated`);
-      } else {
-        const created = await catalogApi.createArtist(data);
-        setArtists((as) => [...as, created]);
-        toast.success(`${data.name} added to catalog`);
-      }
-      setEditingArtist(undefined);
+      const created = await catalogApi.createArtist(toApiArtist(artist));
+      setArtists((as) => [...as, resolveArtist(created)]);
+      toast.success(`${created.name} added to catalog`);
+      setAddArtistOpen(false);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to save artist");
-      throw err;
+      toast.error(err instanceof Error ? err.message : "Failed to add artist");
     }
   }
 
-  function openAddArtist() { setEditingArtist(undefined); setArtistFormOpen(true); }
-  function openEditArtist(a: Artist) { setEditingArtist(a); setArtistFormOpen(true); }
-  function openDeleteArtist(a: Artist) { setDeletingArtist(a); setDeleteArtistOpen(true); }
+  async function handleSaveArtist(updated: Artist) {
+    try {
+      const saved = await catalogApi.updateArtist(updated.id, toApiArtist(updated));
+      setArtists((as) => as.map((a) => (a.id === saved.id ? resolveArtist(saved) : a)));
+      setAlbums((als) =>
+        als.map((al) =>
+          al.artistId === saved.id
+            ? resolveAlbum({ ...al, artistName: saved.name, artistPhoto: saved.photo })
+            : al
+        )
+      );
+      toast.success(`${saved.name} updated`);
+      setEditArtist(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to update artist");
+    }
+  }
 
   async function handleDeleteArtist() {
-    if (!deletingArtist) return;
-    const id = deletingArtist.id;
-    const name = deletingArtist.name;
+    if (!deleteArtist) return;
+    const id = deleteArtist.id;
+    const name = deleteArtist.name;
     try {
       await catalogApi.deleteArtist(id);
       setArtists((as) => as.filter((a) => a.id !== id));
       setAlbums((als) => als.filter((al) => al.artistId !== id));
       toast.success(`${name} removed from catalog`);
-      setDeletingArtist(null);
-      setDeleteArtistOpen(false);
-      if (window.location.pathname.startsWith(`/artists/${id}`)) {
-        nav("/artists");
-      }
+      setDeleteArtist(null);
+      if (window.location.pathname.startsWith(`/artists/${id}`)) nav("/artists");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to delete artist");
     }
   }
 
-  async function handleSaveAlbum(data: Omit<Album, "id">) {
+  async function handleAddAlbum(album: Album) {
     try {
-      if (editingAlbum) {
-        const updated = await catalogApi.updateAlbum(editingAlbum.id, data);
-        setAlbums((als) => als.map((al) => (al.id === updated.id ? updated : al)));
-        toast.success(`"${data.title}" updated`);
-      } else {
-        const created = await catalogApi.createAlbum(data);
-        setAlbums((als) => [...als, created]);
-        toast.success(`"${data.title}" added to catalog`);
-      }
-      setEditingAlbum(undefined);
-      setAlbumFormDefaultArtist(undefined);
+      const created = await catalogApi.createAlbum(toApiAlbum(album));
+      setAlbums((als) => [...als, resolveAlbum(created)]);
+      toast.success(`"${created.title}" added to catalog`);
+      setAddAlbumArtistId(null);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to save album");
-      throw err;
+      toast.error(err instanceof Error ? err.message : "Failed to add album");
     }
   }
 
-  function openAddAlbum(defaultArtistId?: string) {
-    setEditingAlbum(undefined);
-    setAlbumFormDefaultArtist(defaultArtistId);
-    setAlbumFormOpen(true);
+  async function handleSaveAlbum(updated: Album) {
+    try {
+      const saved = await catalogApi.updateAlbum(updated.id, toApiAlbum(updated));
+      setAlbums((als) => als.map((al) => (al.id === saved.id ? resolveAlbum(saved) : al)));
+      toast.success(`"${saved.title}" updated`);
+      setEditAlbum(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to update album");
+    }
   }
-  function openEditAlbum(al: Album) { setEditingAlbum(al); setAlbumFormDefaultArtist(undefined); setAlbumFormOpen(true); }
-
-  function openDeleteAlbum(al: Album) { setDeletingAlbum(al); setDeleteOpen(true); }
 
   async function handleDeleteAlbum() {
-    if (!deletingAlbum) return;
-    const artistId = deletingAlbum.artistId;
-    const albumId = deletingAlbum.id;
-    const title = deletingAlbum.title;
+    if (!deleteAlbum) return;
+    const albumId = deleteAlbum.id;
+    const artistId = deleteAlbum.artistId;
+    const title = deleteAlbum.title;
     try {
       await catalogApi.deleteAlbum(albumId);
       setAlbums((als) => als.filter((al) => al.id !== albumId));
       toast.success(`"${title}" removed`);
-      setDeletingAlbum(null);
-      setDeleteOpen(false);
-      if (window.location.pathname === `/albums/${albumId}`) {
-        nav(`/artists/${artistId}`);
-      }
+      setDeleteAlbum(null);
+      if (window.location.pathname === `/albums/${albumId}`) nav(`/artists/${artistId}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to delete album");
     }
   }
 
-  const deletingAlbumArtist = deletingAlbum ? artists.find(a => a.id === deletingAlbum.artistId) ?? null : null;
-  const deletingArtistAlbumCount = deletingArtist ? albums.filter(al => al.artistId === deletingArtist.id).length : 0;
+  const addAlbumArtist = addAlbumArtistId
+    ? artists.find((a) => a.id === addAlbumArtistId) ?? null
+    : null;
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
-        <p className="text-muted-foreground">Loading catalog…</p>
-      </div>
+      <ThemeContext.Provider value={{ isDark, toggle: () => setIsDark((v) => !v) }}>
+        <div className={`min-h-screen flex items-center justify-center ${isDark ? "bg-[#09090f] text-[#7070a0]" : "bg-[#faf8f4] text-[#78716c]"}`}>
+          Loading catalog…
+        </div>
+      </ThemeContext.Provider>
     );
   }
 
   if (loadError) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-3 bg-background text-foreground px-6 text-center">
-        <p className="text-lg font-medium">Could not load catalog</p>
-        <p className="text-muted-foreground text-sm max-w-md">{loadError}</p>
-        <p className="text-muted-foreground text-sm">Make sure the API is running on the configured VITE_API_URL.</p>
-      </div>
+      <ThemeContext.Provider value={{ isDark, toggle: () => setIsDark((v) => !v) }}>
+        <div className={`min-h-screen flex flex-col items-center justify-center gap-3 px-6 text-center ${isDark ? "bg-[#09090f] text-[#f2f2f8]" : "bg-[#faf8f4] text-[#1c1917]"}`}>
+          <p className="text-lg font-medium">Could not load catalog</p>
+          <p className={`text-sm ${isDark ? "text-[#7070a0]" : "text-[#78716c]"}`}>{loadError}</p>
+          <p className={`text-sm ${isDark ? "text-[#7070a0]" : "text-[#78716c]"}`}>Make sure the API is running on VITE_API_URL.</p>
+        </div>
+      </ThemeContext.Provider>
     );
   }
 
   return (
-    <CatalogContext.Provider value={{ artists, albums, openAddArtist, openEditArtist, openDeleteArtist, openAddAlbum, openEditAlbum, openDeleteAlbum }}>
-      {children}
-      <ArtistFormModal
-        open={artistFormOpen}
-        onClose={() => { setArtistFormOpen(false); setEditingArtist(undefined); }}
-        initial={editingArtist}
-        onSave={handleSaveArtist}
-      />
-      <AlbumFormModal
-        open={albumFormOpen}
-        onClose={() => { setAlbumFormOpen(false); setEditingAlbum(undefined); setAlbumFormDefaultArtist(undefined); }}
-        initial={editingAlbum}
-        artists={artists}
-        defaultArtistId={albumFormDefaultArtist}
-        onSave={handleSaveAlbum}
-      />
-      <DeleteAlbumModal
-        open={deleteOpen}
-        onClose={() => { setDeleteOpen(false); setDeletingAlbum(null); }}
-        album={deletingAlbum}
-        artist={deletingAlbumArtist}
-        onConfirm={handleDeleteAlbum}
-      />
-      <DeleteArtistModal
-        open={deleteArtistOpen}
-        onClose={() => { setDeleteArtistOpen(false); setDeletingArtist(null); }}
-        artist={deletingArtist}
-        albumCount={deletingArtistAlbumCount}
-        onConfirm={handleDeleteArtist}
-      />
-    </CatalogContext.Provider>
+    <ThemeContext.Provider value={{ isDark, toggle: () => setIsDark((v) => !v) }}>
+      <CatalogContext.Provider
+        value={{
+          artists,
+          albums,
+          openAddArtist,
+          openEditArtist,
+          openDeleteArtist,
+          openAddAlbum,
+          openEditAlbum,
+          openDeleteAlbum,
+        }}
+      >
+        <Toaster position="bottom-right" theme={isDark ? "dark" : "light"} richColors />
+        {children}
+        {addArtistOpen && (
+          <AddArtistModal onClose={() => setAddArtistOpen(false)} onAdd={handleAddArtist} />
+        )}
+        {editArtist && (
+          <EditArtistModal
+            artist={editArtist}
+            onClose={() => setEditArtist(null)}
+            onSave={handleSaveArtist}
+          />
+        )}
+        {deleteArtist && (
+          <ConfirmDialog
+            title="Delete Artist"
+            body={`Delete "${deleteArtist.name}" and all of their albums? This cannot be undone.`}
+            image={deleteArtist.photo}
+            imageShape="circle"
+            onConfirm={handleDeleteArtist}
+            onCancel={() => setDeleteArtist(null)}
+            isDark={isDark}
+          />
+        )}
+        {addAlbumArtist && (
+          <AddAlbumModal
+            artistId={addAlbumArtist.id}
+            artistName={addAlbumArtist.name}
+            artistPhoto={addAlbumArtist.photo}
+            onClose={() => setAddAlbumArtistId(null)}
+            onAdd={handleAddAlbum}
+          />
+        )}
+        {editAlbum && (
+          <EditAlbumModal
+            album={editAlbum}
+            onClose={() => setEditAlbum(null)}
+            onSave={handleSaveAlbum}
+          />
+        )}
+        {deleteAlbum && (
+          <ConfirmDialog
+            title="Delete Album"
+            body={`Delete "${deleteAlbum.title}"? This cannot be undone.`}
+            image={deleteAlbum.cover}
+            imageShape="square"
+            onConfirm={handleDeleteAlbum}
+            onCancel={() => setDeleteAlbum(null)}
+            isDark={isDark}
+          />
+        )}
+      </CatalogContext.Provider>
+    </ThemeContext.Provider>
   );
 }
 
-// Re-export view components so pages can import them
 export { ArtistsView, AlbumsView, ArtistDetailView, AlbumDetailView };
-
-// ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
   return <RouterProvider router={router} />;

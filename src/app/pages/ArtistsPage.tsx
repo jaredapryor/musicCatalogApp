@@ -1,6 +1,5 @@
 import { useNavigate } from "react-router";
-import { ArtistsView } from "../App";
-import { useCatalog } from "../App";
+import { ArtistsView, useCatalog } from "../App";
 
 export default function ArtistsPage() {
   const { artists, albums, openAddArtist, openEditArtist, openDeleteArtist } = useCatalog();
@@ -9,10 +8,10 @@ export default function ArtistsPage() {
     <ArtistsView
       artists={artists}
       albums={albums}
-      onSelect={id => nav(`/artists/${id}`)}
-      onAdd={openAddArtist}
-      onEdit={openEditArtist}
-      onDelete={openDeleteArtist}
+      onSelectArtist={(id) => nav(`/artists/${id}`)}
+      onAddArtist={openAddArtist}
+      onEditArtist={openEditArtist}
+      onDeleteArtist={openDeleteArtist}
     />
   );
 }

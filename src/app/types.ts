@@ -1,29 +1,30 @@
-export type ArtistType = "solo" | "group";
-export type Certification = "none" | "gold" | "platinum" | "multi-platinum";
-export type StreamingPlatform = "spotify" | "apple" | "amazon";
+export type ArtistType = "Solo" | "Group";
+export type Cert = "Gold" | "Platinum" | "Diamond" | null;
+export type StreamingPlatform = "SP" | "AM" | "AZ";
 
 export interface Artist {
   id: string;
   name: string;
-  country: string;
-  countryFlag: string;
+  photo: string;
+  flag: string;
   countryCode: string;
-  photoUrl: string;
   type: ArtistType;
-  memberCount?: number;
-  activeSince: number;
+  groupSize?: number;
+  since: number;
 }
 
 export interface Album {
   id: string;
-  artistId: string;
   title: string;
-  coverUrl: string;
+  artistId: string;
+  artistName: string;
+  artistPhoto: string;
   label: string;
-  releaseYear: number;
-  trackCount: number;
-  singleCount: number;
-  albumsSold: number;
-  certification: Certification;
+  year: number;
+  sold: string;
+  tracks: number;
+  singles: number;
+  cert: Cert;
   streaming: StreamingPlatform[];
+  cover: string;
 }

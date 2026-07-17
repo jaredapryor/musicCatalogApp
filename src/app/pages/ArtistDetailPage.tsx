@@ -1,18 +1,24 @@
 import { useNavigate, useParams } from "react-router";
-import { ArtistDetailView } from "../App";
-import { useCatalog } from "../App";
+import { ArtistDetailView, useCatalog } from "../App";
 
 export default function ArtistDetailPage() {
   const { artistId } = useParams<{ artistId: string }>();
-  const { artists, albums, openEditArtist, openDeleteArtist, openAddAlbum, openEditAlbum, openDeleteAlbum } = useCatalog();
+  const {
+    artists,
+    albums,
+    openEditArtist,
+    openDeleteArtist,
+    openAddAlbum,
+    openEditAlbum,
+    openDeleteAlbum,
+  } = useCatalog();
   const nav = useNavigate();
 
-  const artist = artists.find(a => a.id === artistId);
-  const artistAlbums = albums.filter(al => al.artistId === artistId);
+  const artist = artists.find((a) => a.id === artistId);
 
   if (!artist) {
     return (
-      <div className="max-w-5xl mx-auto px-4 py-16 text-center text-muted-foreground">
+      <div className="max-w-5xl mx-auto px-4 py-16 text-center text-[#7070a0]">
         Artist not found.
       </div>
     );
@@ -21,14 +27,14 @@ export default function ArtistDetailPage() {
   return (
     <ArtistDetailView
       artist={artist}
-      albums={artistAlbums}
-      onNavigateAlbum={id => nav(`/albums/${id}`)}
+      albums={albums}
       onBack={() => nav("/artists")}
-      onEdit={() => openEditArtist(artist)}
-      onDelete={() => openDeleteArtist(artist)}
+      onSelectAlbum={(id) => nav(`/albums/${id}`)}
       onAddAlbum={() => openAddAlbum(artist.id)}
       onEditAlbum={openEditAlbum}
       onDeleteAlbum={openDeleteAlbum}
+      onEditArtist={() => openEditArtist(artist)}
+      onDeleteArtist={() => openDeleteArtist(artist)}
     />
   );
 }
