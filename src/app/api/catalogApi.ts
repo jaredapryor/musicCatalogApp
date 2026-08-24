@@ -32,7 +32,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export type ArtistInput = Omit<Artist, "id">;
-export type AlbumInput = Omit<Album, "id" | "artistName" | "artistPhoto">;
+export type AlbumInput = Omit<Album, "id" | "artistName" | "artistPhoto" | "artistPhotoSource">;
 
 export function getArtists(): Promise<Artist[]> {
   return request<Artist[]>("/artists");

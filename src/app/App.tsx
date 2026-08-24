@@ -3,15 +3,18 @@ import { RouterProvider, useNavigate, useLocation } from "react-router";
 import { router } from "./routes";
 import { X, ArrowLeft, Search, Plus, Pencil, Trash2, Music, ChevronDown, ChevronUp, Moon, Sun } from "lucide-react";
 import { Toaster, toast } from "sonner";
-import type { Album, Artist, ArtistType, Cert, StreamingPlatform } from "./types";
+import type { Album, Artist, ArtistType, Cert, PhotoSource, StreamingPlatform } from "./types";
 import * as catalogApi from "./api/catalogApi";
 import {
-  PHOTO_BY_FILE,
-  COVER_BY_FILE,
   FLAG_BY_CODE,
   PLACEHOLDER_PHOTO,
-  PLACEHOLDER_COVER,
+  LOCAL_PHOTO_OPTIONS,
+  DEFAULT_LOCAL_PHOTO,
+  LOCAL_COVER_OPTIONS,
+  DEFAULT_LOCAL_COVER,
 } from "./assetMaps";
+import { ArtistAvatar } from "./ArtistAvatar";
+import { AlbumCover, resolveAlbumCover } from "./AlbumCover";
 
 // ─── Artist Photo Imports ─────────────────────────────────────────────────────
 
@@ -44,26 +47,8 @@ function t(dark: string, light: string, isDark: boolean) {
 // Dark:  bg #09090f, card #13131c, text #f2f2f8, muted #7070a0, accent #a855f7
 // Light: bg #faf8f4, card rgba(255,255,255,0.85), text #1c1917, muted #78716c, accent #9333ea
 
-// ─── Asset resolution (API stores filenames/keys; UI needs resolved URLs) ─────
-const PHOTO_URL_TO_FILE: Record<string, string> = Object.fromEntries(
-  Object.entries(PHOTO_BY_FILE).map(([file, url]) => [url, file])
-);
-const COVER_URL_TO_FILE: Record<string, string> = Object.fromEntries(
-  Object.entries(COVER_BY_FILE).map(([file, url]) => [url, file])
-);
-
-function resolvePhoto(key: string): string {
-  if (!key) return PLACEHOLDER_PHOTO;
-  if (PHOTO_BY_FILE[key]) return PHOTO_BY_FILE[key];
-  if (key.startsWith("http") || key.startsWith("data:") || key.startsWith("/")) return key;
-  return PLACEHOLDER_PHOTO;
-}
-
-function resolveCover(key: string): string {
-  if (!key) return PLACEHOLDER_COVER;
-  if (COVER_BY_FILE[key]) return COVER_BY_FILE[key];
-  if (key.startsWith("http") || key.startsWith("data:") || key.startsWith("/")) return key;
-  return PLACEHOLDER_COVER;
+function imageSource(value?: PhotoSource): PhotoSource {
+  return value === "remote" ? "remote" : "local";
 }
 
 function resolveFlag(countryCode: string, flagKey?: string): string {
@@ -73,7 +58,7 @@ function resolveFlag(countryCode: string, flagKey?: string): string {
 function resolveArtist(a: Artist): Artist {
   return {
     ...a,
-    photo: resolvePhoto(a.photo),
+    photoSource: imageSource(a.photoSource),
     flag: resolveFlag(a.countryCode, a.flag),
   };
 }
@@ -81,16 +66,16 @@ function resolveArtist(a: Artist): Artist {
 function resolveAlbum(al: Album): Album {
   return {
     ...al,
-    cover: resolveCover(al.cover),
-    artistPhoto: resolvePhoto(al.artistPhoto),
+    coverSource: imageSource(al.coverSource),
+    artistPhotoSource: imageSource(al.artistPhotoSource),
   };
 }
 
 function toApiArtist(a: Artist): catalogApi.ArtistInput {
-  const photoKey = PHOTO_URL_TO_FILE[a.photo] || a.photo || "";
   return {
     name: a.name,
-    photo: photoKey,
+    photo: a.photo ?? "",
+    photoSource: imageSource(a.photoSource),
     flag: a.countryCode,
     countryCode: a.countryCode,
     type: a.type,
@@ -100,7 +85,6 @@ function toApiArtist(a: Artist): catalogApi.ArtistInput {
 }
 
 function toApiAlbum(al: Album): catalogApi.AlbumInput {
-  const coverKey = COVER_URL_TO_FILE[al.cover] || al.cover || "";
   return {
     title: al.title,
     artistId: al.artistId,
@@ -111,7 +95,8 @@ function toApiAlbum(al: Album): catalogApi.AlbumInput {
     singles: al.singles,
     cert: al.cert,
     streaming: al.streaming,
-    cover: coverKey,
+    cover: al.cover ?? "",
+    coverSource: imageSource(al.coverSource),
   };
 }
 
@@ -190,11 +175,15 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
   image?: string;
   imageShape?: "circle" | "square";
+  avatarName?: string;
+  avatarPhotoSource?: PhotoSource;
+  coverTitle?: string;
+  coverSource?: PhotoSource;
   onConfirm: () => void;
   onCancel: () => void;
   isDark: boolean;
 }
-function ConfirmDialog({ title, body, confirmLabel = "Delete", image, imageShape = "square", onConfirm, onCancel, isDark }: ConfirmDialogProps) {
+function ConfirmDialog({ title, body, confirmLabel = "Delete", image, imageShape = "square", avatarName, avatarPhotoSource, coverTitle, coverSource, onConfirm, onCancel, isDark }: ConfirmDialogProps) {
   const card = isDark ? "bg-[#13131c] border-[rgba(255,255,255,0.08)]" : "bg-white border-[rgba(0,0,0,0.1)]";
   const heading = isDark ? "text-[#f2f2f8]" : "text-[#1c1917]";
   const sub = isDark ? "text-[#7070a0]" : "text-[#78716c]";
@@ -202,11 +191,19 @@ function ConfirmDialog({ title, body, confirmLabel = "Delete", image, imageShape
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-[rgba(0,0,0,0.55)]" onClick={onCancel} />
       <div className={`relative border rounded-[14px] w-[360px] p-[21px] shadow-[0px_25px_50px_-12px_rgba(0,0,0,0.7)] ${card}`}>
-        {image && (
+        {imageShape === "circle" && avatarName ? (
+          <div className="mb-[14px]">
+            <ArtistAvatar name={avatarName} photo={image ?? ""} photoSource={avatarPhotoSource} sizeClass="size-[64px]" isDark={isDark} />
+          </div>
+        ) : imageShape === "square" && coverTitle ? (
+          <div className="mb-[14px]">
+            <AlbumCover title={coverTitle} cover={image ?? ""} coverSource={coverSource} sizeClass="size-[64px]" roundedClass="rounded-[10px]" isDark={isDark} />
+          </div>
+        ) : image ? (
           <div className={`mb-[14px] overflow-hidden ${imageShape === "circle" ? "rounded-full size-[64px]" : "rounded-[10px] w-[64px] h-[64px]"}`} style={{ background: isDark ? "#1a1a26" : "#f0ebe2" }}>
             <img src={image} alt="" className="w-full h-full object-cover" />
           </div>
-        )}
+        ) : null}
         <h2 className={`text-[17.5px] font-semibold mb-[10px] ${heading}`}>{title}</h2>
         <p className={`text-[12.25px] leading-[18px] mb-[21px] ${sub}`}>{body}</p>
         <div className="flex gap-[10.5px]">
@@ -370,9 +367,7 @@ function ArtistsView({ artists, albums, onSelectArtist, onAddArtist, onEditArtis
                   </button>
                 </div>
                 <div className="flex items-start gap-[14px]">
-                  <div className="rounded-full size-[56px] shrink-0 overflow-hidden" style={{ background: isDark ? "#1a1a26" : "#f0ebe2" }}>
-                    <img src={artist.photo} alt={artist.name} className="w-full h-full object-cover" />
-                  </div>
+                  <ArtistAvatar name={artist.name} photo={artist.photo} photoSource={artist.photoSource} sizeClass="size-[70px]" isDark={isDark} />
                   <div className="flex-1 min-w-0 pr-[24px]">
                     <p className={`text-[14px] font-semibold leading-[1.3] truncate ${heading}`}>{artist.name}</p>
                     <div className="flex items-center gap-[5.25px] mt-[5.25px]">
@@ -474,7 +469,15 @@ function AlbumsView({ albums, onSelectAlbum, onEditAlbum, onDeleteAlbum }: Album
             <div key={album.id} className={`relative rounded-[14px] overflow-hidden transition-colors group ${card} ${isDark ? "border border-[rgba(255,255,255,0.05)]" : "border border-[rgba(0,0,0,0.06)]"}`}>
               <button onClick={() => onSelectAlbum(album.id)} className="w-full text-left">
                 <div className="aspect-square overflow-hidden">
-                  <img src={album.cover} alt={album.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                  <AlbumCover
+                    title={album.title}
+                    cover={album.cover}
+                    coverSource={album.coverSource}
+                    sizeClass="w-full h-full"
+                    roundedClass="rounded-none"
+                    isDark={isDark}
+                    imgClassName="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  />
                 </div>
                 <div className="p-[12px]">
                   <p className={`text-[12.25px] font-semibold leading-[1.3] truncate ${isDark ? "text-[#f2f2f8]" : "text-[#1c1917]"}`}>{album.title}</p>
@@ -540,9 +543,7 @@ function ArtistDetailView({ artist, albums, onBack, onSelectAlbum, onAddAlbum, o
 
         <div className={`border rounded-[14px] p-[21.8px] ${card}`}>
           <div className="flex items-start gap-[17.5px]">
-            <div className="rounded-full size-[168px] shrink-0 overflow-hidden" style={{ background: isDark ? "#1a1a26" : "#f0ebe2" }}>
-              <img src={artist.photo} alt={artist.name} className="w-full h-full object-cover" />
-            </div>
+            <ArtistAvatar name={artist.name} photo={artist.photo} photoSource={artist.photoSource} sizeClass="size-[202px]" shape="rounded-square" isDark={isDark} />
             <div className="flex-1 min-w-0">
               <h1 className={`text-[26.25px] leading-[31.5px] ${heading}`} style={{ fontFamily: "'Playfair Display',Georgia,serif", fontWeight: 700 }}>{artist.name}</h1>
               <div className="flex items-center gap-[10.5px] mt-[7px] flex-wrap">
@@ -591,9 +592,14 @@ function ArtistDetailView({ artist, albums, onBack, onSelectAlbum, onAddAlbum, o
           {albumsOpen && artistAlbums.map((album, i) => (
             <div key={album.id} className={`flex items-center gap-[14px] px-[17.5px] py-[14px] ${i < artistAlbums.length - 1 ? `border-b ${divider}` : ""}`}>
               <button onClick={() => onSelectAlbum(album.id)} className="flex items-center gap-[14px] flex-1 min-w-0 text-left hover:opacity-80 transition-opacity">
-                <div className="rounded-[10.5px] size-[56px] shrink-0 overflow-hidden" style={{ background: isDark ? "#1a1a26" : "#f0ebe2" }}>
-                  <img src={album.cover} alt={album.title} className="w-full h-full object-cover" />
-                </div>
+                <AlbumCover
+                  title={album.title}
+                  cover={album.cover}
+                  coverSource={album.coverSource}
+                  sizeClass="size-[56px]"
+                  roundedClass="rounded-[10.5px]"
+                  isDark={isDark}
+                />
                 <div className="flex-1 min-w-0">
                   <p className={`text-[12.25px] font-semibold leading-[17.5px] truncate ${heading}`}>{album.title}</p>
                   <p className={`text-[10.5px] font-medium mt-[1.75px] ${muted}`}>{album.label} · {album.year}</p>
@@ -641,11 +647,14 @@ function AlbumDetailView({ album, onBack, onEdit, onDelete, onGoToArtist }: Albu
   const muted = isDark ? "text-[#7070a0]" : "text-[#78716c]";
   const metaCard = isDark ? "bg-[rgba(19,19,28,0.7)] border-[rgba(255,255,255,0.04)]" : "bg-[rgba(255,255,255,0.7)] border-[rgba(0,0,0,0.05)]";
   const accent = isDark ? "text-[#a855f7]" : "text-[#9333ea]";
+  const resolvedCover = resolveAlbumCover(album.cover, album.coverSource);
 
   return (
     <div className={`relative min-h-screen ${bg}`}>
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <img src={album.cover} alt="" className="absolute w-full h-full object-cover opacity-20 blur-[70px] scale-110" />
+        {resolvedCover && (
+          <img src={resolvedCover} alt="" className="absolute w-full h-full object-cover opacity-20 blur-[70px] scale-110" />
+        )}
         <div className={`absolute inset-0 ${isDark ? "bg-[rgba(9,9,15,0.7)]" : "bg-[rgba(250,248,244,0.75)]"}`} />
       </div>
       <div className="relative max-w-[784px] mx-auto px-[21px] pt-[21px] pb-[42px]">
@@ -654,16 +663,20 @@ function AlbumDetailView({ album, onBack, onEdit, onDelete, onGoToArtist }: Albu
           Back
         </button>
         <div className="flex items-start gap-[28px] mt-[28px]">
-          <div className="rounded-[14px] size-[224px] shrink-0 overflow-hidden shadow-[0px_25px_50px_-12px_rgba(0,0,0,0.5)]" style={{ background: isDark ? "#1a1a26" : "#f0ebe2" }}>
-            <img src={album.cover} alt={album.title} className="w-full h-full object-cover" />
-          </div>
+          <AlbumCover
+            title={album.title}
+            cover={album.cover}
+            coverSource={album.coverSource}
+            sizeClass="size-[224px]"
+            roundedClass="rounded-[14px]"
+            className="shadow-[0px_25px_50px_-12px_rgba(0,0,0,0.5)]"
+            isDark={isDark}
+          />
           <div className="flex-1 min-w-0">
             <p className={`text-[15.75px] font-semibold tracking-[1.575px] uppercase ${accent}`}>Album</p>
             <h1 className={`text-[31.5px] leading-[39.375px] mt-[7px] ${heading}`} style={{ fontFamily: "'Playfair Display',Georgia,serif", fontWeight: 700 }}>{album.title}</h1>
             <button onClick={onGoToArtist} className="flex items-center gap-[7px] mt-[10.5px] group/artist hover:opacity-80 transition-opacity">
-              <div className="rounded-full size-[42px] shrink-0 overflow-hidden" style={{ background: isDark ? "#1a1a26" : "#f0ebe2" }}>
-                <img src={album.artistPhoto} alt={album.artistName} className="w-full h-full object-cover" />
-              </div>
+              <ArtistAvatar name={album.artistName} photo={album.artistPhoto} photoSource={album.artistPhotoSource} sizeClass="size-[42px]" isDark={isDark} />
               <span className={`text-[15.75px] font-medium group-hover/artist:underline underline-offset-2 ${heading}`}>{album.artistName}</span>
             </button>
             <div className="grid grid-cols-2 gap-[10.5px] mt-[17.5px]">
@@ -709,14 +722,19 @@ function AddArtistModal({ onClose, onAdd }: AddArtistModalProps) {
   const [type, setType] = useState<ArtistType>("Solo");
   const [groupSize, setGroupSize] = useState("4");
   const [since, setSince] = useState(String(new Date().getFullYear()));
+  const [photoSource, setPhotoSource] = useState<PhotoSource>("local");
+  const [localPhoto, setLocalPhoto] = useState(DEFAULT_LOCAL_PHOTO);
+  const [remotePhoto, setRemotePhoto] = useState("");
 
   const handleAdd = () => {
     if (!name.trim() || !since.trim()) return;
+    const photo = photoSource === "local" ? localPhoto : remotePhoto.trim();
     onAdd({
       id: name.toLowerCase().replace(/\s+/g, "-") + "-" + Date.now(),
       name: name.trim(),
-      photo: PLACEHOLDER_PHOTO,
-      flag: FLAG_MAP[countryCode] || PLACEHOLDER_PHOTO,
+      photo,
+      photoSource,
+      flag: FLAG_MAP[countryCode] || FLAG_MAP.US,
       countryCode,
       type,
       groupSize: type === "Group" ? parseInt(groupSize) || undefined : undefined,
@@ -725,7 +743,31 @@ function AddArtistModal({ onClose, onAdd }: AddArtistModalProps) {
     onClose();
   };
 
-  return <ArtistFormModal title="Add Artist" isDark={isDark} name={name} setName={setName} countryCode={countryCode} setCountryCode={setCountryCode} type={type} setType={setType} groupSize={groupSize} setGroupSize={setGroupSize} since={since} setSince={setSince} onClose={onClose} onSubmit={handleAdd} submitLabel="Add Artist" />;
+  return (
+    <ArtistFormModal
+      title="Add Artist"
+      isDark={isDark}
+      name={name}
+      setName={setName}
+      countryCode={countryCode}
+      setCountryCode={setCountryCode}
+      type={type}
+      setType={setType}
+      groupSize={groupSize}
+      setGroupSize={setGroupSize}
+      since={since}
+      setSince={setSince}
+      photoSource={photoSource}
+      setPhotoSource={setPhotoSource}
+      localPhoto={localPhoto}
+      setLocalPhoto={setLocalPhoto}
+      remotePhoto={remotePhoto}
+      setRemotePhoto={setRemotePhoto}
+      onClose={onClose}
+      onSubmit={handleAdd}
+      submitLabel="Add Artist"
+    />
+  );
 }
 
 // ─── Edit Artist Modal ────────────────────────────────────────────────────────
@@ -737,14 +779,56 @@ function EditArtistModal({ artist, onClose, onSave }: EditArtistModalProps) {
   const [type, setType] = useState<ArtistType>(artist.type);
   const [groupSize, setGroupSize] = useState(String(artist.groupSize || 4));
   const [since, setSince] = useState(String(artist.since));
+  const [photoSource, setPhotoSource] = useState<PhotoSource>(artist.photoSource ?? "local");
+  const [localPhoto, setLocalPhoto] = useState(
+    artist.photoSource === "remote" ? DEFAULT_LOCAL_PHOTO : (artist.photo ?? "")
+  );
+  const [remotePhoto, setRemotePhoto] = useState(
+    artist.photoSource === "remote" ? artist.photo : ""
+  );
 
   const handleSave = () => {
     if (!name.trim() || !since.trim()) return;
-    onSave({ ...artist, name: name.trim(), flag: FLAG_MAP[countryCode] || artist.flag, countryCode, type, groupSize: type === "Group" ? parseInt(groupSize) || undefined : undefined, since: parseInt(since) || artist.since });
+    const photo = photoSource === "local" ? localPhoto : remotePhoto.trim();
+    onSave({
+      ...artist,
+      name: name.trim(),
+      photo,
+      photoSource,
+      flag: FLAG_MAP[countryCode] || artist.flag,
+      countryCode,
+      type,
+      groupSize: type === "Group" ? parseInt(groupSize) || undefined : undefined,
+      since: parseInt(since) || artist.since,
+    });
     onClose();
   };
 
-  return <ArtistFormModal title="Edit Artist" isDark={isDark} name={name} setName={setName} countryCode={countryCode} setCountryCode={setCountryCode} type={type} setType={setType} groupSize={groupSize} setGroupSize={setGroupSize} since={since} setSince={setSince} onClose={onClose} onSubmit={handleSave} submitLabel="Save Changes" />;
+  return (
+    <ArtistFormModal
+      title="Edit Artist"
+      isDark={isDark}
+      name={name}
+      setName={setName}
+      countryCode={countryCode}
+      setCountryCode={setCountryCode}
+      type={type}
+      setType={setType}
+      groupSize={groupSize}
+      setGroupSize={setGroupSize}
+      since={since}
+      setSince={setSince}
+      photoSource={photoSource}
+      setPhotoSource={setPhotoSource}
+      localPhoto={localPhoto}
+      setLocalPhoto={setLocalPhoto}
+      remotePhoto={remotePhoto}
+      setRemotePhoto={setRemotePhoto}
+      onClose={onClose}
+      onSubmit={handleSave}
+      submitLabel="Save Changes"
+    />
+  );
 }
 
 // Shared Artist form component
@@ -755,17 +839,30 @@ interface ArtistFormModalProps {
   type: ArtistType; setType: (v: ArtistType) => void;
   groupSize: string; setGroupSize: (v: string) => void;
   since: string; setSince: (v: string) => void;
+  photoSource: PhotoSource; setPhotoSource: (v: PhotoSource) => void;
+  localPhoto: string; setLocalPhoto: (v: string) => void;
+  remotePhoto: string; setRemotePhoto: (v: string) => void;
   onClose: () => void; onSubmit: () => void; submitLabel: string;
 }
-function ArtistFormModal({ title, isDark, name, setName, countryCode, setCountryCode, type, setType, groupSize, setGroupSize, since, setSince, onClose, onSubmit, submitLabel }: ArtistFormModalProps) {
+function ArtistFormModal({
+  title, isDark, name, setName, countryCode, setCountryCode, type, setType,
+  groupSize, setGroupSize, since, setSince, photoSource, setPhotoSource,
+  localPhoto, setLocalPhoto, remotePhoto, setRemotePhoto, onClose, onSubmit, submitLabel,
+}: ArtistFormModalProps) {
   const card = isDark ? "bg-[#13131c] border-[rgba(255,255,255,0.08)]" : "bg-white border-[rgba(0,0,0,0.1)]";
   const heading = isDark ? "text-[#f2f2f8]" : "text-[#1c1917]";
+  const muted = isDark ? "text-[#7070a0]" : "text-[#78716c]";
   const labelCls = `block text-[12.25px] font-medium mb-[5.25px] ${heading}`;
   const inp = `w-full border rounded-[7px] px-[10.5px] py-[8.75px] text-[12.25px] focus:outline-none transition-colors ${inputCls(isDark)}`;
   const previewFlag = FLAG_MAP[countryCode];
+  const previewPhoto = photoSource === "local" ? localPhoto : remotePhoto.trim();
+  const accent = isDark ? "#a855f7" : "#9333ea";
+  const sourceBtn = isDark
+    ? "border-[rgba(255,255,255,0.08)] text-[#7070a0] hover:text-[#f2f2f8]"
+    : "border-[rgba(0,0,0,0.1)] text-[#78716c] hover:text-[#1c1917]";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto py-[21px]">
       <div className="absolute inset-0 bg-[rgba(0,0,0,0.55)]" onClick={onClose} />
       <div className={`relative border rounded-[14px] w-[420px] p-[21px] shadow-[0px_25px_50px_-12px_rgba(0,0,0,0.8)] ${card}`}>
         <div className="flex items-center justify-between mb-[17.5px]">
@@ -774,8 +871,46 @@ function ArtistFormModal({ title, isDark, name, setName, countryCode, setCountry
         </div>
         <div className="space-y-[14px]">
           <div>
-            <label className={labelCls}>Artist Name <span className={isDark ? "text-[#a855f7]" : "text-[#9333ea]"}>*</span></label>
+            <label className={labelCls}>Artist Name <span style={{ color: accent }}>*</span></label>
             <input value={name} onChange={(e) => setName(e.target.value)} className={inp} />
+          </div>
+          <div>
+            <label className={labelCls}>Artist Photo</label>
+            <div className="flex items-center gap-[10px]">
+              <button
+                type="button"
+                onClick={() => setPhotoSource(photoSource === "local" ? "remote" : "local")}
+                className={`shrink-0 flex items-center px-[11.3px] py-[8.75px] rounded-[10.5px] border text-[12.25px] font-medium transition-colors ${sourceBtn}`}
+              >
+                {photoSource === "local" ? "Local" : "Remote"}
+              </button>
+              {photoSource === "local" ? (
+                <select value={localPhoto} onChange={(e) => setLocalPhoto(e.target.value)} className={`${inp} flex-1`}>
+                  <option value="">None</option>
+                  {LOCAL_PHOTO_OPTIONS.map((opt) => (
+                    <option key={opt.file} value={opt.file}>{opt.label}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={remotePhoto}
+                  onChange={(e) => setRemotePhoto(e.target.value)}
+                  placeholder="https://images.unsplash.com/..."
+                  className={`${inp} flex-1`}
+                />
+              )}
+              <ArtistAvatar
+                name={name.trim() || "Artist"}
+                photo={previewPhoto}
+                photoSource={photoSource}
+                sizeClass="size-[80px]"
+                shape="square"
+                isDark={isDark}
+              />
+            </div>
+            {photoSource === "remote" && (
+              <p className={`text-[10.5px] mt-[5px] ${muted}`}>Paste an image URL. If it fails to load, initials are shown.</p>
+            )}
           </div>
           <div>
             <label className={labelCls}>Country</label>
@@ -807,7 +942,7 @@ function ArtistFormModal({ title, isDark, name, setName, countryCode, setCountry
               </div>
             )}
             <div className="w-[100px]">
-              <label className={labelCls}>Active Since <span className={isDark ? "text-[#a855f7]" : "text-[#9333ea]"}>*</span></label>
+              <label className={labelCls}>Active Since <span style={{ color: accent }}>*</span></label>
               <input value={since} onChange={(e) => setSince(e.target.value)} className={inp} />
             </div>
           </div>
@@ -825,16 +960,16 @@ function ArtistFormModal({ title, isDark, name, setName, countryCode, setCountry
 
 // ─── Add Album Modal ──────────────────────────────────────────────────────────
 interface AddAlbumModalProps {
-  artistId: string; artistName: string; artistPhoto: string;
+  artistId: string; artistName: string; artistPhoto: string; artistPhotoSource?: PhotoSource;
   onClose: () => void; onAdd: (album: Album) => void;
 }
-function AddAlbumModal({ artistId, artistName, artistPhoto, onClose, onAdd }: AddAlbumModalProps) {
+function AddAlbumModal({ artistId, artistName, artistPhoto, artistPhotoSource, onClose, onAdd }: AddAlbumModalProps) {
   const { isDark } = useTheme();
-  const blank: Omit<Album, "id" | "artistId" | "artistName" | "artistPhoto"> = {
-    title: "", label: "", year: new Date().getFullYear(), sold: "", tracks: 10, singles: 2, cert: null, streaming: ["SP"], cover: PLACEHOLDER_COVER,
+  const blank: Omit<Album, "id" | "artistId" | "artistName" | "artistPhoto" | "artistPhotoSource"> = {
+    title: "", label: "", year: new Date().getFullYear(), sold: "", tracks: 10, singles: 2, cert: null, streaming: ["SP"], cover: DEFAULT_LOCAL_COVER, coverSource: "local",
   };
   const handleAdd = (data: typeof blank) => {
-    onAdd({ id: data.title.toLowerCase().replace(/\s+/g, "-") + "-" + Date.now(), artistId, artistName, artistPhoto, ...data });
+    onAdd({ id: data.title.toLowerCase().replace(/\s+/g, "-") + "-" + Date.now(), artistId, artistName, artistPhoto, artistPhotoSource, ...data });
     onClose();
   };
   return <AlbumFormModal title="Add Album" isDark={isDark} initial={blank} artistName={artistName} onClose={onClose} onSubmit={handleAdd} submitLabel="Add Album" />;
@@ -846,8 +981,10 @@ interface EditAlbumModalProps {
 }
 function EditAlbumModal({ album, onClose, onSave }: EditAlbumModalProps) {
   const { isDark } = useTheme();
-  const initial = { title: album.title, label: album.label, year: album.year, sold: album.sold, tracks: album.tracks, singles: album.singles, cert: album.cert, streaming: album.streaming, cover: album.cover };
-  const handleSave = (data: typeof initial) => {
+  const initial: AlbumFormData = {
+    title: album.title, label: album.label, year: album.year, sold: album.sold, tracks: album.tracks, singles: album.singles, cert: album.cert, streaming: album.streaming, cover: album.cover, coverSource: album.coverSource ?? "local",
+  };
+  const handleSave = (data: AlbumFormData) => {
     onSave({ ...album, ...data });
     onClose();
   };
@@ -855,21 +992,30 @@ function EditAlbumModal({ album, onClose, onSave }: EditAlbumModalProps) {
 }
 
 // Shared Album form
-type AlbumFormData = { title: string; label: string; year: number; sold: string; tracks: number; singles: number; cert: Cert; streaming: StreamingPlatform[]; cover: string; };
+type AlbumFormData = { title: string; label: string; year: number; sold: string; tracks: number; singles: number; cert: Cert; streaming: StreamingPlatform[]; cover: string; coverSource: PhotoSource; };
 interface AlbumFormModalProps {
   title: string; isDark: boolean; initial: AlbumFormData; artistName: string;
   onClose: () => void; onSubmit: (data: AlbumFormData) => void; submitLabel: string;
 }
 function AlbumFormModal({ title, isDark, initial, artistName, onClose, onSubmit, submitLabel }: AlbumFormModalProps) {
   const [f, setF] = useState(initial);
-  const [coverUrl, setCoverUrl] = useState("");
-  const [coverPreviewOk, setCoverPreviewOk] = useState(false);
+  const [coverSource, setCoverSource] = useState<PhotoSource>(initial.coverSource ?? "local");
+  const [localCover, setLocalCover] = useState(
+    initial.coverSource === "remote" ? DEFAULT_LOCAL_COVER : (initial.cover ?? "")
+  );
+  const [remoteCover, setRemoteCover] = useState(
+    initial.coverSource === "remote" ? initial.cover : ""
+  );
   const card = isDark ? "bg-[#13131c] border-[rgba(255,255,255,0.08)]" : "bg-white border-[rgba(0,0,0,0.1)]";
   const heading = isDark ? "text-[#f2f2f8]" : "text-[#1c1917]";
   const muted = isDark ? "text-[#7070a0]" : "text-[#78716c]";
   const labelCls = `block text-[12.25px] font-medium mb-[5.25px] ${heading}`;
   const inp = `w-full border rounded-[7px] px-[10.5px] py-[8.75px] text-[12.25px] focus:outline-none transition-colors ${inputCls(isDark)}`;
   const accent = isDark ? "#a855f7" : "#9333ea";
+  const sourceBtn = isDark
+    ? "border-[rgba(255,255,255,0.08)] text-[#7070a0] hover:text-[#f2f2f8]"
+    : "border-[rgba(0,0,0,0.1)] text-[#78716c] hover:text-[#1c1917]";
+  const previewCover = coverSource === "local" ? localCover : remoteCover.trim();
 
   const toggleStream = (p: StreamingPlatform) => setF((prev) => ({ ...prev, streaming: prev.streaming.includes(p) ? prev.streaming.filter((s) => s !== p) : [...prev.streaming, p] }));
 
@@ -888,12 +1034,41 @@ function AlbumFormModal({ title, isDark, initial, artistName, onClose, onSubmit,
             <input value={f.title} onChange={(e) => setF((p) => ({ ...p, title: e.target.value }))} className={inp} />
           </div>
           <div>
-            <label className={labelCls}>Cover Image URL</label>
-            <input value={coverUrl} onChange={(e) => { setCoverUrl(e.target.value); setCoverPreviewOk(false); }} placeholder="https://images.unsplash.com/..." className={inp} />
-            {coverUrl && (
-              <div className="mt-[7px] w-[56px] h-[56px] rounded-[7px] overflow-hidden border border-[rgba(128,128,128,0.2)]">
-                <img src={coverUrl} alt="" className="w-full h-full object-cover" onLoad={() => setCoverPreviewOk(true)} onError={() => setCoverPreviewOk(false)} style={{ display: coverPreviewOk ? "block" : "none" }} />
-              </div>
+            <label className={labelCls}>Album Cover</label>
+            <div className="flex items-center gap-[10px]">
+              <button
+                type="button"
+                onClick={() => setCoverSource(coverSource === "local" ? "remote" : "local")}
+                className={`shrink-0 flex items-center px-[11.3px] py-[8.75px] rounded-[10.5px] border text-[12.25px] font-medium transition-colors ${sourceBtn}`}
+              >
+                {coverSource === "local" ? "Local" : "Remote"}
+              </button>
+              {coverSource === "local" ? (
+                <select value={localCover} onChange={(e) => setLocalCover(e.target.value)} className={`${inp} flex-1`}>
+                  <option value="">None</option>
+                  {LOCAL_COVER_OPTIONS.map((opt) => (
+                    <option key={opt.file} value={opt.file}>{opt.label}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={remoteCover}
+                  onChange={(e) => setRemoteCover(e.target.value)}
+                  placeholder="https://images.unsplash.com/..."
+                  className={`${inp} flex-1`}
+                />
+              )}
+              <AlbumCover
+                title={f.title.trim() || "Album"}
+                cover={previewCover}
+                coverSource={coverSource}
+                sizeClass="size-[56px]"
+                roundedClass="rounded-[7px]"
+                isDark={isDark}
+              />
+            </div>
+            {coverSource === "remote" && (
+              <p className={`text-[10.5px] mt-[5px] ${muted}`}>Paste an image URL. If it fails to load, a vinyl record is shown.</p>
             )}
           </div>
           <div className="flex gap-[10.5px]">
@@ -946,7 +1121,11 @@ function AlbumFormModal({ title, isDark, initial, artistName, onClose, onSubmit,
         </div>
         <div className="flex gap-[10.5px] mt-[21px]">
           <button onClick={onClose} className={`flex-1 py-[10.5px] rounded-[10.5px] border text-[12.25px] font-medium transition-colors ${isDark ? "border-[rgba(255,255,255,0.08)] text-[#7070a0] hover:text-[#f2f2f8]" : "border-[rgba(0,0,0,0.1)] text-[#78716c] hover:text-[#1c1917]"}`}>Cancel</button>
-          <button onClick={() => onSubmit({ ...f, cover: coverUrl.trim() || f.cover })} disabled={!f.title.trim()} className="flex-1 py-[10.5px] rounded-[10.5px] text-white text-[12.25px] font-medium disabled:opacity-40 transition-opacity" style={{ background: "linear-gradient(135deg,rgb(142,81,255) 0%,rgb(246,51,154) 100%)" }}>
+          <button onClick={() => onSubmit({
+            ...f,
+            cover: coverSource === "local" ? localCover : remoteCover.trim(),
+            coverSource,
+          })} disabled={!f.title.trim()} className="flex-1 py-[10.5px] rounded-[10.5px] text-white text-[12.25px] font-medium disabled:opacity-40 transition-opacity" style={{ background: "linear-gradient(135deg,rgb(142,81,255) 0%,rgb(246,51,154) 100%)" }}>
             {submitLabel}
           </button>
         </div>
@@ -954,7 +1133,6 @@ function AlbumFormModal({ title, isDark, initial, artistName, onClose, onSubmit,
     </div>
   );
 }
-
 
 // ─── Catalog Context (API-backed) ─────────────────────────────────────────────
 
@@ -1051,7 +1229,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
       setAlbums((als) =>
         als.map((al) =>
           al.artistId === saved.id
-            ? resolveAlbum({ ...al, artistName: saved.name, artistPhoto: saved.photo })
+            ? resolveAlbum({ ...al, artistName: saved.name, artistPhoto: saved.photo, artistPhotoSource: saved.photoSource })
             : al
         )
       );
@@ -1174,6 +1352,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
             body={`Delete "${deleteArtist.name}" and all of their albums? This cannot be undone.`}
             image={deleteArtist.photo}
             imageShape="circle"
+            avatarName={deleteArtist.name}
+            avatarPhotoSource={deleteArtist.photoSource}
             onConfirm={handleDeleteArtist}
             onCancel={() => setDeleteArtist(null)}
             isDark={isDark}
@@ -1184,6 +1364,7 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
             artistId={addAlbumArtist.id}
             artistName={addAlbumArtist.name}
             artistPhoto={addAlbumArtist.photo}
+            artistPhotoSource={addAlbumArtist.photoSource}
             onClose={() => setAddAlbumArtistId(null)}
             onAdd={handleAddAlbum}
           />
@@ -1201,6 +1382,8 @@ export function CatalogProvider({ children }: { children: React.ReactNode }) {
             body={`Delete "${deleteAlbum.title}"? This cannot be undone.`}
             image={deleteAlbum.cover}
             imageShape="square"
+            coverTitle={deleteAlbum.title}
+            coverSource={deleteAlbum.coverSource}
             onConfirm={handleDeleteAlbum}
             onCancel={() => setDeleteAlbum(null)}
             isDark={isDark}
