@@ -35,7 +35,7 @@ const COUNTRY_NAMES: Record<string, string> = {
 // ─── Theme Context ────────────────────────────────────────────────────────────
 interface ThemeCtx { isDark: boolean; toggle: () => void; }
 const ThemeContext = createContext<ThemeCtx>({ isDark: true, toggle: () => {} });
-const useTheme = () => useContext(ThemeContext);
+export const useTheme = () => useContext(ThemeContext);
 
 // Theme-aware class helpers
 function t(dark: string, light: string, isDark: boolean) {
