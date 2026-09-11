@@ -1,4 +1,4 @@
-import type { Album, Artist } from "../types";
+import type { Album, Artist, PhotoSource } from "../types";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
 
@@ -33,12 +33,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export type ArtistInput = Omit<Artist, "id">;
 export type AlbumInput = Omit<Album, "id" | "artistName" | "artistPhoto" | "artistPhotoSource">;
+export type ImageSourceFilter = PhotoSource | "all";
 
-export function getArtists(): Promise<Artist[]> {
-  return request<Artist[]>("/artists");
+function imageSourceQuery(imageSource?: ImageSourceFilter): string {
+  if (!imageSource || imageSource === "all") return "";
+  return `?imageSource=${encodeURIComponent(imageSource)}`;
 }
-export function getAlbums(): Promise<Album[]> {
-  return request<Album[]>("/albums");
+
+export function getArtists(imageSource?: ImageSourceFilter): Promise<Artist[]> {
+  return request<Artist[]>(`/artists${imageSourceQuery(imageSource)}`);
+}
+export function getAlbums(imageSource?: ImageSourceFilter): Promise<Album[]> {
+  return request<Album[]>(`/albums${imageSourceQuery(imageSource)}`);
 }
 export function createArtist(data: ArtistInput): Promise<Artist> {
   return request<{ artist: Artist }>("/artists", { method: "POST", body: JSON.stringify(data) }).then((r) => r.artist);

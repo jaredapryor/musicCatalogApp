@@ -276,6 +276,7 @@ function ArtistsView({ artists, albums, onSelectArtist, onAddArtist, onEditArtis
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<"All" | "Solo" | "Group">("All");
   const [countryFilter, setCountryFilter] = useState("All");
+  const [imageFilter, setImageFilter] = useState<"All" | PhotoSource>("All");
   const [sort, setSort] = useState("name-az");
 
   const countries = useMemo(() => {
@@ -288,7 +289,8 @@ function ArtistsView({ artists, albums, onSelectArtist, onAddArtist, onEditArtis
       const matchSearch = a.name.toLowerCase().includes(search.toLowerCase());
       const matchType = typeFilter === "All" || a.type === typeFilter;
       const matchCountry = countryFilter === "All" || a.countryCode === countryFilter;
-      return matchSearch && matchType && matchCountry;
+      const matchImage = imageFilter === "All" || (a.photoSource ?? "local") === imageFilter;
+      return matchSearch && matchType && matchCountry && matchImage;
     });
     const albumCountFor = (id: string) => albums.filter((al) => al.artistId === id).length;
     if (sort === "name-az") arr = [...arr].sort((a, b) => a.name.localeCompare(b.name));
@@ -297,7 +299,7 @@ function ArtistsView({ artists, albums, onSelectArtist, onAddArtist, onEditArtis
     else if (sort === "oldest") arr = [...arr].sort((a, b) => a.since - b.since);
     else if (sort === "newest") arr = [...arr].sort((a, b) => b.since - a.since);
     return arr;
-  }, [artists, albums, search, typeFilter, countryFilter, sort]);
+  }, [artists, albums, search, typeFilter, countryFilter, imageFilter, sort]);
 
   const albumCountFor = (id: string) => albums.filter((al) => al.artistId === id).length;
 
@@ -336,6 +338,11 @@ function ArtistsView({ artists, albums, onSelectArtist, onAddArtist, onEditArtis
           <select value={countryFilter} onChange={(e) => setCountryFilter(e.target.value)} className={`${selCls} flex-1`}>
             <option value="All">All Countries</option>
             {countries.map((c) => <option key={c} value={c}>{COUNTRY_NAMES[c] || c}</option>)}
+          </select>
+          <select value={imageFilter} onChange={(e) => setImageFilter(e.target.value as "All" | PhotoSource)} className={`${selCls} flex-1`}>
+            <option value="All">All Images</option>
+            <option value="local">Local</option>
+            <option value="remote">Remote</option>
           </select>
           <select value={sort} onChange={(e) => setSort(e.target.value)} className={`${selCls} flex-1`}>
             <option value="name-az">Name A→Z</option>
@@ -407,6 +414,7 @@ function AlbumsView({ albums, onSelectAlbum, onEditAlbum, onDeleteAlbum }: Album
   const [search, setSearch] = useState("");
   const [certFilter, setCertFilter] = useState("All");
   const [streamFilter, setStreamFilter] = useState("All");
+  const [imageFilter, setImageFilter] = useState<"All" | PhotoSource>("All");
   const [sort, setSort] = useState("title-az");
 
   const filtered = useMemo(() => {
@@ -415,13 +423,14 @@ function AlbumsView({ albums, onSelectAlbum, onEditAlbum, onDeleteAlbum }: Album
       const matchSearch = !search || al.title.toLowerCase().includes(q) || al.artistName.toLowerCase().includes(q);
       const matchCert = certFilter === "All" || (certFilter === "None" ? !al.cert : al.cert === certFilter);
       const matchStream = streamFilter === "All" || al.streaming.includes(streamFilter as StreamingPlatform);
-      return matchSearch && matchCert && matchStream;
+      const matchImage = imageFilter === "All" || (al.coverSource ?? "local") === imageFilter;
+      return matchSearch && matchCert && matchStream && matchImage;
     });
     if (sort === "title-az") arr = [...arr].sort((a, b) => a.title.localeCompare(b.title));
     else if (sort === "year-new") arr = [...arr].sort((a, b) => b.year - a.year);
     else if (sort === "year-old") arr = [...arr].sort((a, b) => a.year - b.year);
     return arr;
-  }, [albums, search, certFilter, streamFilter, sort]);
+  }, [albums, search, certFilter, streamFilter, imageFilter, sort]);
 
   const bg = isDark ? "bg-[#09090f]" : "bg-[#faf8f4]";
   const heading = isDark ? "text-[#f2f2f8]" : "text-[#1c1917]";
@@ -455,6 +464,11 @@ function AlbumsView({ albums, onSelectAlbum, onEditAlbum, onDeleteAlbum }: Album
               <option value="SP">Spotify</option>
               <option value="AM">Apple Music</option>
               <option value="AZ">Amazon Music</option>
+            </select>
+            <select value={imageFilter} onChange={(e) => setImageFilter(e.target.value as "All" | PhotoSource)} className={selCls}>
+              <option value="All">All Images</option>
+              <option value="local">Local</option>
+              <option value="remote">Remote</option>
             </select>
             <select value={sort} onChange={(e) => setSort(e.target.value)} className={selCls}>
               <option value="title-az">Title A→Z</option>
